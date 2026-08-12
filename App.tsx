@@ -10,6 +10,9 @@ import {
   GestureResponderEvent,
   PanResponderGestureState,
   LayoutChangeEvent,
+  Modal,
+  ScrollView,
+  Alert,
 } from 'react-native';
 import Svg, { Path, Circle, Defs, LinearGradient, Stop, Text as SvgText, Line } from 'react-native-svg';
 import * as ScreenOrientation from 'expo-screen-orientation';
@@ -17,6 +20,17 @@ import * as Battery from 'expo-battery';
 import { useSynthEngine } from './src/hooks/useSynthEngine';
 import { useMidiDevices } from './src/hooks/useMidiDevices';
 import { useArranger } from './src/hooks/useArranger';
+import SoundLibraryService, { CustomVoicePreset } from './src/services/soundLibraryService';
+import {
+  fetchMidiDiagnostics,
+  promptUsbPermission,
+  addMidiLogListener,
+  addMidiNoteListener,
+} from './modules/synth-engine/src';
+import {
+  MidiDiagnosticsData,
+  MidiLogEvent,
+} from './modules/synth-engine/src/SynthEngineModule';
 
 const STYLES_LIST = [
   { id: '1', name: '1. Cumbia Professional' },
@@ -24,6 +38,33 @@ const STYLES_LIST = [
   { id: '3', name: '3. 8-Beat Piano' },
   { id: '4', name: '4. Salsa Classic' },
   { id: '5', name: '5. Bachata Groove' },
+];
+
+export interface VoicePreset {
+  id: string;
+  name: string;
+  category: 'PIANO' | 'PADS' | 'STRINGS' | 'LEADS' | 'BRASS' | 'ORGAN' | 'BASS';
+  sf2Path: string;
+  sf2Preset: number;
+  isCustom?: boolean;
+}
+
+const VOICE_LIBRARY: VoicePreset[] = [
+  { id: 'v1', name: 'Yamaha CFX Grand', category: 'PIANO', sf2Path: 'soundfonts/yamaha_cfx_grand.sf2', sf2Preset: 0 },
+  { id: 'v2', name: 'DX7 E-Piano Vintage', category: 'PIANO', sf2Path: 'soundfonts/dx7_epiano.sf2', sf2Preset: 4 },
+  { id: 'v3', name: 'Suitcase Mark II Rhodes', category: 'PIANO', sf2Path: 'soundfonts/rhodes_mark2.sf2', sf2Preset: 5 },
+  { id: 'v4', name: 'Ambient Pad Warm', category: 'PADS', sf2Path: 'soundfonts/ambient_pad.sf2', sf2Preset: 89 },
+  { id: 'v5', name: 'Ethereal Space Choir', category: 'PADS', sf2Path: 'soundfonts/space_choir.sf2', sf2Preset: 91 },
+  { id: 'v6', name: 'Syn Strings Symphony', category: 'STRINGS', sf2Path: 'soundfonts/strings_symphony.sf2', sf2Preset: 48 },
+  { id: 'v7', name: 'Chamber Solo Violin', category: 'STRINGS', sf2Path: 'soundfonts/solo_violin.sf2', sf2Preset: 40 },
+  { id: 'v8', name: 'Synth Lead Moog Saw', category: 'LEADS', sf2Path: 'soundfonts/moog_saw.sf2', sf2Preset: 81 },
+  { id: 'v9', name: 'Square Wave Retro Lead', category: 'LEADS', sf2Path: 'soundfonts/square_retro.sf2', sf2Preset: 80 },
+  { id: 'v10', name: 'Pop Brass Horn Section', category: 'BRASS', sf2Path: 'soundfonts/pop_brass.sf2', sf2Preset: 61 },
+  { id: 'v11', name: 'French Horn Ensemble', category: 'BRASS', sf2Path: 'soundfonts/french_horns.sf2', sf2Preset: 60 },
+  { id: 'v12', name: 'B3 Drawbar Hammond Organ', category: 'ORGAN', sf2Path: 'soundfonts/b3_organ.sf2', sf2Preset: 16 },
+  { id: 'v13', name: 'Pipe Cathedral Organ', category: 'ORGAN', sf2Path: 'soundfonts/pipe_organ.sf2', sf2Preset: 19 },
+  { id: 'v14', name: 'Fender Jazz Bass', category: 'BASS', sf2Path: 'soundfonts/jazz_bass.sf2', sf2Preset: 33 },
+  { id: 'v15', name: 'Sub Synth Bass 808', category: 'BASS', sf2Path: 'soundfonts/sub_bass_808.sf2', sf2Preset: 38 },
 ];
 
 // ===================================================
@@ -412,8 +453,8 @@ const ConsoleKnob: React.FC<ConsoleKnobProps> = ({
 // APLICACIÓN PRINCIPAL (SYNTH CONNECT PRO)
 // ===================================================
 export default function App() {
-  const { isInitialized, noteOn, noteOff, setParam } = useSynthEngine();
-  const { devices } = useMidiDevices();
+  const { isInitialized, noteOn, noteOff, setParam, loadSoundFont } = useSynthEngine();
+  const { devices, scan } = useMidiDevices();
   const { bpm, currentSection, setBpm, setSection } = useArranger();
 
   // Estados
@@ -445,11 +486,101 @@ export default function App() {
 
   // Faders State
   const [faders, setFaders] = useState([
-    { id: 1, name: 'CFX Piano', value: 80, solo: false, mute: false },
-    { id: 2, name: 'Ambient Pad', value: 65, solo: false, mute: false },
-    { id: 3, name: 'Syn Strings', value: 50, solo: false, mute: false },
-    { id: 4, name: 'Synth Lead', value: 75, solo: false, mute: false },
+    { id: 1, name: 'Yamaha CFX Grand', value: 80, solo: false, mute: false },
+    { id: 2, name: 'Ambient Pad Warm', value: 65, solo: false, mute: false },
+    { id: 3, name: 'Syn Strings Symphony', value: 50, solo: false, mute: false },
+    { id: 4, name: 'Synth Lead Moog Saw', value: 75, solo: false, mute: false },
   ]);
+
+  // Voice Selection Modal State
+  const [isVoicesModalOpen, setIsVoicesModalOpen] = useState<boolean>(false);
+  const [selectedVoiceCategory, setSelectedVoiceCategory] = useState<string>('ALL');
+  const [targetFaderId, setTargetFaderId] = useState<number>(1);
+
+  // Diagnostic Modal State
+  const [isDiagModalOpen, setIsDiagModalOpen] = useState<boolean>(false);
+  const [diagData, setDiagData] = useState<MidiDiagnosticsData | null>(null);
+  const [diagLogs, setDiagLogs] = useState<MidiLogEvent[]>([]);
+  const [lastNoteReceived, setLastNoteReceived] = useState<string>('NINGUNA');
+
+  useEffect(() => {
+    const logSub = addMidiLogListener((event) => {
+      setDiagLogs((prev) => [event, ...prev.slice(0, 199)]);
+    });
+
+    const noteSub = addMidiNoteListener((event) => {
+      if (event.type === 'noteOn') {
+        const octave = Math.floor(event.note / 12) - 1;
+        const noteNames = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+        const name = `${noteNames[event.note % 12]}${octave}`;
+        setLastNoteReceived(`NOTE ON: ${name} (MIDI ${event.note}, Vel: ${event.velocity})`);
+      }
+    });
+
+    return () => {
+      logSub.remove();
+      noteSub.remove();
+    };
+  }, []);
+
+  const refreshDiagData = () => {
+    try {
+      const data = fetchMidiDiagnostics();
+      setDiagData(data);
+    } catch (e) {
+      console.warn('Error refreshing diag data:', e);
+    }
+  };
+
+  useEffect(() => {
+    if (!isDiagModalOpen) return;
+    refreshDiagData();
+    const interval = setInterval(refreshDiagData, 1200);
+    return () => clearInterval(interval);
+  }, [isDiagModalOpen]);
+
+  // Custom SoundFonts State
+  const [customVoices, setCustomVoices] = useState<CustomVoicePreset[]>([]);
+
+  useEffect(() => {
+    async function loadUserSoundfonts() {
+      const userList = await SoundLibraryService.getCustomVoices();
+      setCustomVoices(userList);
+    }
+    loadUserSoundfonts();
+  }, []);
+
+  const handleImportSoundFile = async () => {
+    const targetCat = selectedVoiceCategory === 'ALL' ? 'PIANO' : selectedVoiceCategory;
+    const imported = await SoundLibraryService.pickAndImportSoundFiles(targetCat);
+    if (imported.length > 0) {
+      setCustomVoices((prev) => [...prev, ...imported]);
+      Alert.alert(
+        'Sonido Importado',
+        `Se agregaron ${imported.length} archivo(s) a la categoría ${targetCat}.`
+      );
+    }
+  };
+
+  const handleDeleteVoice = (voiceId: string, voiceName: string) => {
+    Alert.alert(
+      'Eliminar Sonido',
+      `¿Estás seguro de eliminar el sonido "${voiceName}" de la memoria del dispositivo?`,
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        {
+          text: 'Eliminar',
+          style: 'destructive',
+          onPress: async () => {
+            await SoundLibraryService.deleteCustomVoice(voiceId);
+            setCustomVoices((prev) => prev.filter((v) => v.id !== voiceId));
+          },
+        },
+      ]
+    );
+  };
+
+  const fullVoiceLibrary = [...VOICE_LIBRARY, ...customVoices];
 
   useEffect(() => {
     async function lockLandscape() {
@@ -575,13 +706,34 @@ export default function App() {
 
       {/* HEADER REORGANIZADO */}
       <View style={styles.header}>
-        {/* IZQUIERDA: Instrumento detectado */}
-        <View style={styles.midiStatusBoxHeader}>
-          <Text style={styles.midiStatusTextHeader}>
-            {devices.length > 0
-              ? `${devices[0].name} USB OK | Local OFF`
-              : 'PSR-E463 USB OK | Local OFF'}
-          </Text>
+        {/* IZQUIERDA: Instrumento detectado y botón de diagnóstico */}
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+          <TouchableOpacity
+            activeOpacity={0.7}
+            delayPressIn={0}
+            delayPressOut={0}
+            style={styles.midiStatusBoxHeader}
+            onPress={() => scan()}
+          >
+            <Text style={styles.midiStatusTextHeader}>
+              {devices.length > 0
+                ? `${devices[0].name.toUpperCase()} ${devices[0].type} OK`
+                : 'BUSCANDO MIDI OTG'}
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            activeOpacity={0.7}
+            delayPressIn={0}
+            delayPressOut={0}
+            style={styles.headerDiagBtn}
+            onPress={() => {
+              refreshDiagData();
+              setIsDiagModalOpen(true);
+            }}
+          >
+            <Text style={styles.headerDiagBtnText}>DIAGNÓSTICO 🔍</Text>
+          </TouchableOpacity>
         </View>
 
         {/* CENTRO PERFECTO: Nombre de la App */}
@@ -709,7 +861,17 @@ export default function App() {
 
         {/* ================= PANEL CENTRAL: PERFORMANCE LAYERS ================= */}
         <View style={styles.centerPanel}>
-          <Text style={styles.panelTitle}>PERFORMANCE LAYERS</Text>
+          <View style={styles.panelHeaderRow}>
+            <Text style={styles.panelTitle}>PERFORMANCE LAYERS</Text>
+            <TouchableOpacity
+              activeOpacity={0.7}
+              delayPressIn={0}
+              delayPressOut={0}
+              onPress={() => setIsVoicesModalOpen(true)}
+            >
+              <Text style={styles.menuIcon}>≡</Text>
+            </TouchableOpacity>
+          </View>
 
           <View style={styles.fadersGridSeparated}>
             {faders.map((fader) => (
@@ -1033,6 +1195,326 @@ export default function App() {
           </View>
         </View>
       </View>
+
+      {/* MODAL FULL-SCREEN DE SELECCIÓN DE VOCES / SONIDOS */}
+      <Modal
+        visible={isVoicesModalOpen}
+        animationType="slide"
+        transparent={true}
+        onRequestClose={() => setIsVoicesModalOpen(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContentBox}>
+            {/* Header de Modal */}
+            <View style={styles.modalHeaderRow}>
+              <View style={styles.modalTitleBox}>
+                <Text style={styles.modalTitleText}>PERFORMANCE VOICE SELECTOR</Text>
+                <Text style={styles.modalSubTitleText}>
+                  Selecciona la voz instrumental para asignar al canal de la consola principal
+                </Text>
+              </View>
+
+              <View style={styles.modalHeaderActions}>
+                <TouchableOpacity
+                  activeOpacity={0.7}
+                  delayPressIn={0}
+                  delayPressOut={0}
+                  style={styles.modalImportBtn}
+                  onPress={handleImportSoundFile}
+                >
+                  <Text style={styles.modalImportBtnText}>
+                    + IMPORTAR A {selectedVoiceCategory === 'ALL' ? 'PIANO' : selectedVoiceCategory}
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  activeOpacity={0.7}
+                  delayPressIn={0}
+                  delayPressOut={0}
+                  style={styles.modalCloseBtn}
+                  onPress={() => setIsVoicesModalOpen(false)}
+                >
+                  <Text style={styles.modalCloseBtnText}>✕ CERRAR</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            {/* Fader Target Selector Buttons */}
+            <View style={styles.targetFaderRow}>
+              <Text style={styles.targetFaderLabel}>CANAL DESTINO:</Text>
+              {[1, 2, 3, 4].map((fId) => {
+                const isSelected = targetFaderId === fId;
+                const faderVoiceName = faders.find((f) => f.id === fId)?.name || `FADER ${fId}`;
+                return (
+                  <TouchableOpacity
+                    key={fId}
+                    activeOpacity={0.7}
+                    delayPressIn={0}
+                    delayPressOut={0}
+                    style={[styles.targetFaderBtn, isSelected && styles.targetFaderBtnActive]}
+                    onPress={() => setTargetFaderId(fId)}
+                  >
+                    <Text style={[styles.targetFaderBtnNum, isSelected && styles.targetFaderBtnNumActive]}>
+                      F{fId}
+                    </Text>
+                    <Text
+                      style={[styles.targetFaderBtnName, isSelected && styles.targetFaderBtnNameActive]}
+                      numberOfLines={1}
+                    >
+                      {faderVoiceName}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+
+            {/* Categorías de Filtro */}
+            <View style={styles.categoriesBar}>
+              {['ALL', 'PIANO', 'PADS', 'STRINGS', 'LEADS', 'BRASS', 'ORGAN', 'BASS'].map((cat) => {
+                const isActive = selectedVoiceCategory === cat;
+                return (
+                  <TouchableOpacity
+                    key={cat}
+                    activeOpacity={0.7}
+                    delayPressIn={0}
+                    delayPressOut={0}
+                    style={[styles.categoryPill, isActive && styles.categoryPillActive]}
+                    onPress={() => setSelectedVoiceCategory(cat)}
+                  >
+                    <Text style={[styles.categoryPillText, isActive && styles.categoryPillTextActive]}>
+                      {cat}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+
+            {/* Grid de Voces */}
+            <ScrollView style={styles.voicesScrollView} contentContainerStyle={styles.voicesGridContainer}>
+              {fullVoiceLibrary
+                .filter((v) => selectedVoiceCategory === 'ALL' || v.category === selectedVoiceCategory)
+                .map((voice) => {
+                  const isCurrentAssigned = faders.find((f) => f.id === targetFaderId)?.name === voice.name;
+                  return (
+                    <TouchableOpacity
+                      key={voice.id}
+                      activeOpacity={0.7}
+                      delayPressIn={0}
+                      delayPressOut={0}
+                      style={[
+                        styles.voiceCardItem,
+                        isCurrentAssigned && styles.voiceCardItemActive,
+                        voice.isCustom && styles.voiceCardItemCustom,
+                      ]}
+                      onPress={() => {
+                        setFaders((prev) =>
+                          prev.map((f) => (f.id === targetFaderId ? { ...f, name: voice.name } : f))
+                        );
+                        loadSoundFont(voice.sf2Path);
+                        noteOn(60, 100);
+                        setTimeout(() => noteOff(60), 300);
+                      }}
+                    >
+                      <View style={styles.voiceCardHeader}>
+                        <Text style={styles.voiceCardCategory}>{voice.category}</Text>
+                        <Text style={styles.voiceCardPreset}>
+                          {voice.isCustom ? '[LOCAL SF2]' : `PR #${voice.sf2Preset}`}
+                        </Text>
+                      </View>
+                      <Text style={[styles.voiceCardName, isCurrentAssigned && styles.voiceCardNameActive]}>
+                        {voice.name}
+                      </Text>
+                      <View style={styles.voiceCardFooter}>
+                        <Text style={[styles.voiceAssignBadge, isCurrentAssigned && styles.voiceAssignBadgeActive]}>
+                          {isCurrentAssigned ? `ASIGNADO A F${targetFaderId}` : `TOCAR PARA ASIGNAR`}
+                        </Text>
+
+                        {voice.isCustom && (
+                          <TouchableOpacity
+                            activeOpacity={0.7}
+                            delayPressIn={0}
+                            delayPressOut={0}
+                            style={styles.voiceTrashBtn}
+                            onPress={() => handleDeleteVoice(voice.id, voice.name)}
+                          >
+                            <Text style={styles.voiceTrashBtnText}>✕ BORRAR</Text>
+                          </TouchableOpacity>
+                        )}
+                      </View>
+                    </TouchableOpacity>
+                  );
+                })}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      {/* MODAL DE DIAGNÓSTICO Y CONSOLA DE LOGS EN TIEMPO REAL */}
+      <Modal
+        visible={isDiagModalOpen}
+        animationType="slide"
+        transparent={false}
+        onRequestClose={() => setIsDiagModalOpen(false)}
+      >
+        <SafeAreaView style={styles.diagModalContainer}>
+          <View style={styles.diagModalHeader}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.diagModalTitle}>MIDI DIAGNOSTICS & LOG CONSOLE</Text>
+              <Text style={styles.diagModalSub}>
+                ÚLTIMA NOTA: <Text style={{ color: '#00E5FF', fontWeight: 'bold' }}>{lastNoteReceived}</Text>
+              </Text>
+            </View>
+
+            <View style={styles.diagHeaderRightActions}>
+              <TouchableOpacity
+                activeOpacity={0.7}
+                style={styles.diagHeaderActionBtn}
+                onPress={() => {
+                  promptUsbPermission();
+                  refreshDiagData();
+                }}
+              >
+                <Text style={styles.diagHeaderActionBtnText}>SOLICITAR PERMISO USB</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                activeOpacity={0.7}
+                style={styles.diagHeaderActionBtnCyan}
+                onPress={() => {
+                  scan();
+                  refreshDiagData();
+                }}
+              >
+                <Text style={styles.diagHeaderActionBtnCyanText}>RE-ESCANEAR</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                activeOpacity={0.7}
+                style={styles.modalCloseBtn}
+                onPress={() => setIsDiagModalOpen(false)}
+              >
+                <Text style={styles.modalCloseBtnText}>✕ CERRAR</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+
+          <View style={styles.diagBodySplit}>
+            {/* IZQUIERDA: DISPOSITIVOS HARDWARE */}
+            <ScrollView style={styles.diagLeftPanelCol}>
+              <Text style={styles.diagSectionHeader}>DISPOSITIVOS DE SISTEMA (MidiManager)</Text>
+              {diagData?.systemMidiDevices && diagData.systemMidiDevices.length > 0 ? (
+                diagData.systemMidiDevices.map((sys) => (
+                  <View key={sys.id} style={styles.diagDeviceCard}>
+                    <Text style={styles.diagDeviceName}>{sys.name}</Text>
+                    <Text style={styles.diagDeviceDetail}>Fabricante: {sys.manufacturer} | Producto: {sys.product}</Text>
+                    <Text style={styles.diagDeviceDetail}>
+                      Tipo: {sys.type} | Ports In: {sys.inputPorts} | Ports Out: {sys.outputPorts}
+                    </Text>
+                    <View style={styles.diagBadgeRow}>
+                      <Text style={[styles.diagBadge, sys.isOpen ? styles.diagBadgeGreen : styles.diagBadgeGray]}>
+                        {sys.isOpen ? 'ESTADO: ABIERTO OK' : 'ESTADO: REGISTRADO'}
+                      </Text>
+                      <TouchableOpacity
+                        style={styles.diagCardConnectBtn}
+                        onPress={() => {
+                          attachMidiDevice(sys.id);
+                          refreshDiagData();
+                        }}
+                      >
+                        <Text style={styles.diagCardConnectBtnText}>CONECTAR</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                ))
+              ) : (
+                <View style={styles.diagEmptyBox}>
+                  <Text style={styles.diagEmptyText}>No hay dispositivos en Android MidiManager</Text>
+                </View>
+              )}
+
+              <Text style={[styles.diagSectionHeader, { marginTop: 14 }]}>DISPOSITIVOS USB HOST (UsbManager)</Text>
+              {diagData?.usbHostDevices && diagData.usbHostDevices.length > 0 ? (
+                diagData.usbHostDevices.map((usb, idx) => (
+                  <View key={idx} style={styles.diagDeviceCard}>
+                    <Text style={styles.diagDeviceName}>{usb.name} ({usb.productName})</Text>
+                    <Text style={styles.diagDeviceDetail}>VID: {usb.vendorId} | PID: {usb.productId}</Text>
+                    <Text style={styles.diagDeviceDetail}>Fabricante: {usb.manufacturerName} | Interfaces: {usb.interfaceCount}</Text>
+                    <View style={styles.diagBadgeRow}>
+                      <Text style={[styles.diagBadge, usb.hasPermission ? styles.diagBadgeGreen : styles.diagBadgeRed]}>
+                        PERMISO USB: {usb.hasPermission ? 'CONCEDIDO (OK)' : 'DENEGADO / PENDIENTE'}
+                      </Text>
+                      {!usb.hasPermission && (
+                        <TouchableOpacity
+                          style={styles.diagCardPermissionBtn}
+                          onPress={() => {
+                            promptUsbPermission();
+                            refreshDiagData();
+                          }}
+                        >
+                          <Text style={styles.diagCardPermissionBtnText}>PEDIR PERMISO</Text>
+                        </TouchableOpacity>
+                      )}
+                    </View>
+                  </View>
+                ))
+              ) : (
+                <View style={styles.diagEmptyBox}>
+                  <Text style={styles.diagEmptyText}>No se detectan mandos USB físicos en el puerto OTG</Text>
+                </View>
+              )}
+
+              <Text style={[styles.diagSectionHeader, { marginTop: 14 }]}>RUTAS KERNEL LINUX (/dev/bus/usb)</Text>
+              {diagData?.rawUsbNodes && diagData.rawUsbNodes.length > 0 ? (
+                diagData.rawUsbNodes.map((node, idx) => (
+                  <View key={idx} style={styles.diagDeviceCard}>
+                    <Text style={styles.diagDeviceName}>NODE #{idx + 1}: {node}</Text>
+                  </View>
+                ))
+              ) : (
+                <View style={styles.diagEmptyBox}>
+                  <Text style={styles.diagEmptyText}>Sin nodos activos en /dev/bus/usb</Text>
+                </View>
+              )}
+            </ScrollView>
+
+            {/* DERECHA: CONSOLA DE LOGS DE TERMINAL EN TIEMPO REAL */}
+            <View style={styles.diagRightConsoleCol}>
+              <View style={styles.diagConsoleHeaderRow}>
+                <Text style={styles.diagConsoleTitle}>TERMINAL LIVE LOG MONITOR</Text>
+                <TouchableOpacity
+                  style={styles.diagClearConsoleBtn}
+                  onPress={() => setDiagLogs([])}
+                >
+                  <Text style={styles.diagClearConsoleBtnText}>LIMPIAR CONSOLA</Text>
+                </TouchableOpacity>
+              </View>
+
+              <ScrollView style={styles.diagConsoleBox}>
+                {diagLogs.length === 0 ? (
+                  <Text style={styles.diagConsolePlaceholder}>Esperando eventos nativos de MIDI o puerto USB...</Text>
+                ) : (
+                  diagLogs.map((item, index) => {
+                    let logColor = '#8A9EB8';
+                    if (item.level === 'ERROR') logColor = '#FF3B30';
+                    if (item.level === 'WARN') logColor = '#FF9100';
+                    if (item.message.includes('[MIDI NOTE') || item.message.includes('OK')) logColor = '#00E5FF';
+
+                    const timeStr = new Date(item.timestamp).toLocaleTimeString();
+
+                    return (
+                      <View key={index} style={styles.diagLogRow}>
+                        <Text style={styles.diagLogTime}>[{timeStr}]</Text>
+                        <Text style={[styles.diagLogTag, { color: logColor }]}>[{item.tag}]</Text>
+                        <Text style={[styles.diagLogMsg, { color: logColor }]}>{item.message}</Text>
+                      </View>
+                    );
+                  })
+                )}
+              </ScrollView>
+            </View>
+          </View>
+        </SafeAreaView>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -1876,5 +2358,465 @@ const styles = StyleSheet.create({
   knobValueText: {
     fontSize: 8,
     fontWeight: '700',
+  },
+  // Modal Overlay & Content Box
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(4, 7, 12, 0.88)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 12,
+  },
+  modalContentBox: {
+    width: '95%',
+    height: '92%',
+    backgroundColor: '#0B1019',
+    borderRadius: 10,
+    borderWidth: 1.5,
+    borderColor: '#00E5FF',
+    padding: 12,
+    shadowColor: '#00E5FF',
+    shadowOpacity: 0.3,
+    shadowRadius: 10,
+    elevation: 8,
+  },
+  modalHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#162335',
+    paddingBottom: 6,
+  },
+  modalTitleBox: {
+    flex: 1,
+  },
+  modalTitleText: {
+    color: '#00E5FF',
+    fontSize: 13,
+    fontWeight: '900',
+    letterSpacing: 1,
+  },
+  modalSubTitleText: {
+    color: '#657D99',
+    fontSize: 9,
+    fontWeight: '600',
+    marginTop: 1,
+  },
+  modalCloseBtn: {
+    backgroundColor: '#1E2A3A',
+    paddingVertical: 5,
+    paddingHorizontal: 10,
+    borderRadius: 5,
+    borderWidth: 1,
+    borderColor: '#30455E',
+  },
+  modalCloseBtnText: {
+    color: '#FF5252',
+    fontSize: 10,
+    fontWeight: '800',
+  },
+  targetFaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 8,
+    gap: 6,
+  },
+  targetFaderLabel: {
+    color: '#8CA3BF',
+    fontSize: 9,
+    fontWeight: '800',
+    marginRight: 4,
+  },
+  targetFaderBtn: {
+    flex: 1,
+    backgroundColor: '#0D1522',
+    borderWidth: 1,
+    borderColor: '#19283D',
+    borderRadius: 6,
+    paddingVertical: 4,
+    paddingHorizontal: 6,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  targetFaderBtnActive: {
+    backgroundColor: '#002B3D',
+    borderColor: '#00E5FF',
+  },
+  targetFaderBtnNum: {
+    color: '#3D5470',
+    fontSize: 9,
+    fontWeight: '900',
+  },
+  targetFaderBtnNumActive: {
+    color: '#00E5FF',
+  },
+  targetFaderBtnName: {
+    color: '#7F9BB8',
+    fontSize: 9,
+    fontWeight: '700',
+    flex: 1,
+  },
+  targetFaderBtnNameActive: {
+    color: '#FFFFFF',
+  },
+  categoriesBar: {
+    flexDirection: 'row',
+    gap: 4,
+    marginBottom: 8,
+  },
+  categoryPill: {
+    flex: 1,
+    backgroundColor: '#0F1826',
+    borderWidth: 1,
+    borderColor: '#1C2D45',
+    borderRadius: 4,
+    paddingVertical: 4,
+    alignItems: 'center',
+  },
+  categoryPillActive: {
+    backgroundColor: '#00E5FF',
+    borderColor: '#00E5FF',
+  },
+  categoryPillText: {
+    color: '#6F8AA8',
+    fontSize: 9,
+    fontWeight: '800',
+  },
+  categoryPillTextActive: {
+    color: '#050911',
+  },
+  voicesScrollView: {
+    flex: 1,
+  },
+  voicesGridContainer: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    paddingBottom: 10,
+  },
+  voiceCardItem: {
+    width: '32%',
+    backgroundColor: '#0E1724',
+    borderWidth: 1,
+    borderColor: '#1A293D',
+    borderRadius: 6,
+    padding: 8,
+  },
+  voiceCardItemActive: {
+    backgroundColor: '#072535',
+    borderColor: '#00E5FF',
+  },
+  voiceCardHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 4,
+  },
+  voiceCardCategory: {
+    color: '#00E5FF',
+    fontSize: 8,
+    fontWeight: '800',
+  },
+  voiceCardPreset: {
+    color: '#526A87',
+    fontSize: 8,
+    fontWeight: '700',
+  },
+  voiceCardName: {
+    color: '#D0E1F5',
+    fontSize: 10,
+    fontWeight: '800',
+    marginBottom: 6,
+  },
+  voiceCardNameActive: {
+    color: '#FFFFFF',
+  },
+  voiceCardFooter: {
+    borderTopWidth: 1,
+    borderTopColor: '#162335',
+    paddingTop: 4,
+    alignItems: 'flex-start',
+  },
+  voiceAssignBadge: {
+    color: '#4B6380',
+    fontSize: 7.5,
+    fontWeight: '700',
+  },
+  voiceAssignBadgeActive: {
+    color: '#00E5FF',
+    fontWeight: '900',
+  },
+  modalHeaderActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  modalImportBtn: {
+    backgroundColor: '#00B0FF',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 4,
+  },
+  modalImportBtnText: {
+    color: '#FFFFFF',
+    fontSize: 9,
+    fontWeight: '900',
+  },
+  voiceCardItemCustom: {
+    borderColor: '#00B0FF',
+  },
+  voiceTrashBtn: {
+    marginTop: 4,
+    backgroundColor: '#3B1219',
+    borderColor: '#FF2A4B',
+    borderWidth: 1,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 3,
+  },
+  voiceTrashBtnText: {
+    color: '#FF2A4B',
+    fontSize: 7,
+    fontWeight: '900',
+  },
+  headerDiagBtn: {
+    backgroundColor: '#132238',
+    borderColor: '#00E5FF',
+    borderWidth: 1,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 4,
+  },
+  headerDiagBtnText: {
+    color: '#00E5FF',
+    fontSize: 8.5,
+    fontWeight: '900',
+  },
+  diagModalContainer: {
+    flex: 1,
+    backgroundColor: '#070A0F',
+    padding: 10,
+  },
+  diagModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#0E1522',
+    padding: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#1C293D',
+    marginBottom: 10,
+  },
+  diagModalTitle: {
+    color: '#00E5FF',
+    fontSize: 14,
+    fontWeight: '900',
+    letterSpacing: 1,
+  },
+  diagModalSub: {
+    color: '#8A9EB8',
+    fontSize: 9,
+    marginTop: 2,
+  },
+  diagHeaderRightActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  diagHeaderActionBtn: {
+    backgroundColor: '#2A1B00',
+    borderColor: '#FF9100',
+    borderWidth: 1,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 4,
+  },
+  diagHeaderActionBtnText: {
+    color: '#FF9100',
+    fontSize: 9,
+    fontWeight: '900',
+  },
+  diagHeaderActionBtnCyan: {
+    backgroundColor: '#002E38',
+    borderColor: '#00E5FF',
+    borderWidth: 1,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 4,
+  },
+  diagHeaderActionBtnCyanText: {
+    color: '#00E5FF',
+    fontSize: 9,
+    fontWeight: '900',
+  },
+  diagBodySplit: {
+    flex: 1,
+    flexDirection: 'row',
+    gap: 10,
+  },
+  diagLeftPanelCol: {
+    flex: 1,
+    backgroundColor: '#0B101A',
+    borderRadius: 8,
+    padding: 10,
+    borderWidth: 1,
+    borderColor: '#192436',
+  },
+  diagRightConsoleCol: {
+    flex: 1.3,
+    backgroundColor: '#040609',
+    borderRadius: 8,
+    padding: 10,
+    borderWidth: 1,
+    borderColor: '#162233',
+  },
+  diagSectionHeader: {
+    color: '#FF9100',
+    fontSize: 10,
+    fontWeight: '900',
+    letterSpacing: 0.5,
+    marginBottom: 8,
+  },
+  diagDeviceCard: {
+    backgroundColor: '#121A26',
+    borderRadius: 6,
+    padding: 8,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: '#1E2D42',
+  },
+  diagDeviceName: {
+    color: '#FFFFFF',
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  diagDeviceDetail: {
+    color: '#7D95B3',
+    fontSize: 8.5,
+    marginTop: 2,
+  },
+  diagBadgeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 6,
+  },
+  diagBadge: {
+    fontSize: 8,
+    fontWeight: '800',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 3,
+  },
+  diagBadgeGreen: {
+    backgroundColor: '#0A331A',
+    color: '#00FF66',
+    borderWidth: 1,
+    borderColor: '#00FF66',
+  },
+  diagBadgeRed: {
+    backgroundColor: '#3B1219',
+    color: '#FF2A4B',
+    borderWidth: 1,
+    borderColor: '#FF2A4B',
+  },
+  diagBadgeGray: {
+    backgroundColor: '#1A2330',
+    color: '#8A9EB8',
+  },
+  diagCardConnectBtn: {
+    backgroundColor: '#003B46',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 3,
+  },
+  diagCardConnectBtnText: {
+    color: '#00E5FF',
+    fontSize: 8,
+    fontWeight: '900',
+  },
+  diagCardPermissionBtn: {
+    backgroundColor: '#3B2400',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 3,
+  },
+  diagCardPermissionBtnText: {
+    color: '#FF9100',
+    fontSize: 8,
+    fontWeight: '900',
+  },
+  diagEmptyBox: {
+    backgroundColor: '#0E1520',
+    padding: 12,
+    borderRadius: 6,
+    alignItems: 'center',
+  },
+  diagEmptyText: {
+    color: '#556A85',
+    fontSize: 9,
+    fontStyle: 'italic',
+  },
+  diagConsoleHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 6,
+    paddingBottom: 6,
+    borderBottomWidth: 1,
+    borderBottomColor: '#121A26',
+  },
+  diagConsoleTitle: {
+    color: '#00E5FF',
+    fontSize: 10,
+    fontWeight: '900',
+    letterSpacing: 0.5,
+  },
+  diagClearConsoleBtn: {
+    backgroundColor: '#1E2A3A',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 3,
+  },
+  diagClearConsoleBtnText: {
+    color: '#8A9EB8',
+    fontSize: 8,
+    fontWeight: '800',
+  },
+  diagConsoleBox: {
+    flex: 1,
+  },
+  diagConsolePlaceholder: {
+    color: '#415269',
+    fontSize: 9,
+    fontStyle: 'italic',
+    padding: 10,
+  },
+  diagLogRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    marginBottom: 4,
+    paddingVertical: 2,
+    borderBottomWidth: 1,
+    borderBottomColor: '#0A0F17',
+  },
+  diagLogTime: {
+    color: '#4B6380',
+    fontSize: 8,
+    fontFamily: 'monospace',
+  },
+  diagLogTag: {
+    fontSize: 8,
+    fontWeight: '800',
+    fontFamily: 'monospace',
+  },
+  diagLogMsg: {
+    fontSize: 8.5,
+    fontFamily: 'monospace',
   },
 });

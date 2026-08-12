@@ -1,5 +1,6 @@
 #include <jni.h>
 #include <string>
+#include <android/asset_manager_jni.h>
 #include "SynthEngine.h"
 
 extern "C" {
@@ -12,7 +13,22 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
 JNIEXPORT jboolean JNICALL
 Java_expo_modules_synthengine_SynthEngineModule_nativeInitialize(JNIEnv* env, jobject thiz) {
     LOGI("JNI: Invocando nativeInitialize()");
-    return SynthEngine::getInstance().initialize();
+    return SynthEngine::getInstance().initialize(nullptr);
+}
+
+JNIEXPORT jboolean JNICALL
+Java_expo_modules_synthengine_SynthEngineModule_nativeInitializeWithAssets(JNIEnv* env, jobject thiz, jobject assetManagerObj) {
+    LOGI("JNI: Invocando nativeInitializeWithAssets()");
+    AAssetManager* assetManager = AAssetManager_fromJava(env, assetManagerObj);
+    return SynthEngine::getInstance().initialize(assetManager);
+}
+
+JNIEXPORT jboolean JNICALL
+Java_expo_modules_synthengine_SynthEngineModule_nativeLoadSoundFont(JNIEnv* env, jobject thiz, jstring assetPath) {
+    const char* nativeString = env->GetStringUTFChars(assetPath, 0);
+    bool result = SynthEngine::getInstance().loadSoundFont(std::string(nativeString));
+    env->ReleaseStringUTFChars(assetPath, nativeString);
+    return result;
 }
 
 JNIEXPORT void JNICALL
@@ -40,6 +56,11 @@ Java_expo_modules_synthengine_SynthEngineModule_nativeControlChange(JNIEnv* env,
 JNIEXPORT void JNICALL
 Java_expo_modules_synthengine_SynthEngineModule_nativeProgramChange(JNIEnv* env, jobject thiz, jint channel, jint program) {
     SynthEngine::getInstance().programChange(channel, program);
+}
+
+JNIEXPORT void JNICALL
+Java_expo_modules_synthengine_SynthEngineModule_nativePitchBend(JNIEnv* env, jobject thiz, jint channel, jint pitch) {
+    SynthEngine::getInstance().pitchBend(channel, pitch);
 }
 
 JNIEXPORT jstring JNICALL

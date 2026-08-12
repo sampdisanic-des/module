@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- M-VAVE 25 / SINCO / SMK25II -->
+    <usb-device vendor-id="17235" product-id="19277" />
+    <!-- Generic USB Audio/MIDI Class (Class 1) -->
+    <usb-device class="1" />
+    <!-- Vendor Specific MIDI (Class 255) -->
+    <usb-device class="255" />
+</resources>

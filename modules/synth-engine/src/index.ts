@@ -9,6 +9,15 @@ export function initializeEngine(): boolean {
   }
 }
 
+export function loadSoundFontFile(assetPath: string): boolean {
+  try {
+    return SynthEngineModule.loadSoundFont(assetPath);
+  } catch (error) {
+    console.error('[SynthEngine TS] Error al cargar SoundFont asset:', error);
+    return false;
+  }
+}
+
 export function triggerNoteOn(note: number, velocity: number = 100): void {
   SynthEngineModule.noteOn(note, velocity);
 }
@@ -56,5 +65,29 @@ export function attachMidiDevice(deviceId: string): boolean {
     return false;
   }
 }
+
+export function fetchMidiDiagnostics(): any {
+  try {
+    return SynthEngineModule.getMidiDiagnostics();
+  } catch {
+    return {
+      systemMidiDevices: [],
+      usbHostDevices: [],
+      isDirectUsbActive: false,
+      openPortCount: 0,
+      connectedDeviceName: 'Ninguno'
+    };
+  }
+}
+
+export function promptUsbPermission(): boolean {
+  try {
+    return SynthEngineModule.requestUsbPermission();
+  } catch {
+    return false;
+  }
+}
+
+export { addMidiLogListener, addMidiNoteListener } from './SynthEngineModule';
 
 export default SynthEngineModule;

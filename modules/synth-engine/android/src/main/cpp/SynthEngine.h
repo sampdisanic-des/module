@@ -5,7 +5,14 @@
 #include <unordered_map>
 #include <mutex>
 #include <android/log.h>
+#include <android/asset_manager.h>
 #include "ChordRecognizer.h"
+#include "BiquadFilter.h"
+#include "AdsrEnvelope.h"
+#include "AudioStream.h"
+
+#define TSF_NO_STDIO
+#include "tsf.h"
 
 #define LOG_TAG "SynthEngine"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -16,7 +23,10 @@ class SynthEngine {
 public:
     static SynthEngine& getInstance();
 
-    bool initialize();
+    bool initialize(AAssetManager* assetManager = nullptr);
+    bool loadSoundFont(const std::string& assetPath);
+    bool loadSoundFontFromAsset(AAssetManager* assetManager, const std::string& assetPath);
+
     void noteOn(int note, int velocity);
     void noteOff(int note);
     void setParam(const std::string& paramName, float value);
@@ -25,6 +35,7 @@ public:
     // Métodos MIDI Extendidos
     void controlChange(int channel, int cc, int value);
     void programChange(int channel, int program);
+    void pitchBend(int channel, int pitch);
 
     // Motor de Acompañamiento (Arranger / Styles)
     std::string getDetectedChord();
@@ -46,9 +57,21 @@ private:
     SynthEngine(const SynthEngine&) = delete;
     SynthEngine& operator=(const SynthEngine&) = delete;
 
+    void renderAudioCallback(float* buffer, int numFrames);
+
     bool mInitialized;
     mutable std::mutex mEngineMutex;
     std::unordered_map<std::string, float> mParameters;
+
+    AAssetManager* mAssetManager;
+    tsf* mTsfInstance;
+
+    // Motor Audio Native AAudio Stream
+    AudioStream mAudioStream;
+
+    // Filtro DSP y Envolvente ADSR
+    BiquadFilter mFilter;
+    AdsrEnvelope mGlobalAdsr;
 
     // Arranger state
     ChordRecognizer mLeftHandChordRecognizer;

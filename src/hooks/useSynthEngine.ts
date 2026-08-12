@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   initializeEngine,
+  loadSoundFontFile,
   triggerNoteOn,
   triggerNoteOff,
   updateEngineParam,
@@ -13,6 +14,7 @@ export interface UseSynthEngineReturn {
   noteOn: (note: number, velocity?: number) => void;
   noteOff: (note: number) => void;
   setParam: (paramName: string, value: number) => void;
+  loadSoundFont: (assetPath: string) => boolean;
   clearLogs: () => void;
 }
 
@@ -62,6 +64,15 @@ export const useSynthEngine = (): UseSynthEngineReturn => {
     [addLog]
   );
 
+  const loadSoundFont = useCallback(
+    (assetPath: string) => {
+      const res = loadSoundFontFile(assetPath);
+      addLog(`loadSoundFont: ${assetPath} -> ${res ? 'OK' : 'Error'}`);
+      return res;
+    },
+    [addLog]
+  );
+
   const clearLogs = useCallback(() => {
     setLogBuffer([]);
   }, []);
@@ -73,6 +84,7 @@ export const useSynthEngine = (): UseSynthEngineReturn => {
     noteOn,
     noteOff,
     setParam,
+    loadSoundFont,
     clearLogs,
   };
 };

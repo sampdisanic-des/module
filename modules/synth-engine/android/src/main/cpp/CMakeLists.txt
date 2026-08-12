@@ -15,10 +15,13 @@ add_library(
     SHARED
     OnLoad.cpp
     SynthEngine.cpp
+    AudioStream.cpp
     ChordRecognizer.cpp
 )
 
 target_link_libraries(
     synthengine
     ${LOG_LIB}
+    aaudio
+    android
 )

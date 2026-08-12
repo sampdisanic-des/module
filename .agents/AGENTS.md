@@ -18,6 +18,7 @@ Para clonar y continuar con el desarrollo de este proyecto en otro equipo de có
   - Android NDK (versión `26.1.10909125` o superior).
   - CMake (versión `3.22.1`).
   - Android SDK Platform-Tools (`adb`).
+  - **Mínima versión Android requerida (`minSdkVersion`)**: API 26 (Android 8.0 Oreo) para soporte de audio de baja latencia con la biblioteca `AAudio`.
 
 ### 2. Ubicación Recomendada del SDK (Permisos)
 Instalar o copiar el Android SDK en la carpeta local de usuario para evitar bloqueos de permisos de Administrador en Windows:
@@ -28,14 +29,16 @@ Instalar o copiar el Android SDK en la carpeta local de usuario para evitar bloq
   - `%ANDROID_HOME%\platform-tools`
   - `%ANDROID_HOME%\cmdline-tools\latest\bin`
 
-### 3. Pasos de Configuración del Proyecto
+### 3. Pasos de Sincronización y Configuración en una Nueva PC
+Dado que las carpetas de compilación pesadas (`node_modules/`, `android/build/`, `android/.gradle/`, `android/.cxx/`, `.expo/`) están ignoradas en Git para mantener el repositorio ultra liviano (< 1 MB), ejecuta los siguientes comandos al clonar:
+
 1. **Instalar dependencias de Node**:
    ```bash
    npm install
    ```
 
 2. **Crear archivo de propiedades locales del SDK**:
-   Crear el archivo `android/local.properties` con la ruta de tu SDK:
+   Crear el archivo `android/local.properties` con la ruta local de tu SDK:
    ```properties
    sdk.dir=C\:\\Users\\<TU_USUARIO>\\AppData\\Local\\Android\\Sdk
    ```
@@ -50,7 +53,7 @@ Instalar o copiar el Android SDK en la carpeta local de usuario para evitar bloq
    npx react-native bundle --platform android --dev false --entry-file index.js --bundle-output android/app/src/main/assets/index.android.bundle --assets-dest android/app/src/main/res
    ```
 
-5. **Compilar el APK Nativo (C++ NDK + Kotlin + Synth Engine)**:
+5. **Compilar el APK Nativo (C++ NDK + AAudio + SoundFonts + Synth Engine)**:
    ```bash
    cd android
    gradlew.bat assembleDebug
@@ -64,7 +67,10 @@ Instalar o copiar el Android SDK en la carpeta local de usuario para evitar bloq
 
 ### 4. Consideraciones Técnicas Nativas
 - **Motor Sintetizador C++ NDK**: Se encuentra en `modules/synth-engine/android/src/main/cpp/`. Requiere el punto de entrada `JNI_OnLoad` en `OnLoad.cpp` para su registro en Android.
-- **Alineación ELF 16 KB**: En `modules/synth-engine/android/build.gradle`, se deben mantener las banderas CMake `-Wl,-z,max-page-size=16384` para compatibilidad con versiones recientes de Android.
+- **Alineación ELF 16 KB**: En `modules/synth-engine/android/build.gradle`, se mantienen las banderas CMake `-Wl,-z,max-page-size=16384` y `-DANDROID_PLATFORM=android-26` para compatibilidad con versiones recientes de Android y AAudio.
+- **Ruta de SoundFonts `.sf2`**: Archivos de muestras en `android/app/src/main/assets/soundfonts/`.
+
+---
 
 ## Estado Actual del Proyecto y Arquitectura del Código (Session Context)
 
@@ -79,7 +85,8 @@ Instalar o copiar el Android SDK en la carpeta local de usuario para evitar bloq
   - 8 Botones circulares de sección (`INTRO A..D`, `MAIN A..D`).
   - Botones de transporte (`INTRO`, `START/STOP` gigante con resplandor, `ENDING`).
 - **Panel Central (Performance Layers):**
-  - **4 Canales Faders Independientes:** Cada fader de voz (`CFX Piano`, `Ambient Pad`, `Syn Strings`, `Synth Lead`) en su propia tarjeta separada.
+  - **Header con Menú Hamburguesa `≡`:** Abre la consola modal a pantalla completa para selección de sonidos/voces.
+  - **4 Canales Faders Independientes:** Cada fader de voz (`Yamaha CFX Grand`, `Ambient Pad Warm`, `Syn Strings Symphony`, `Synth Lead Moog Saw`) en su propia tarjeta separada.
   - **Borde de Selección Cyan:** Al presionar o arrastrar un canal, se resalta con borde azul cyan brillante (`#00E5FF`).
   - **VU Meters Dinámicos:** Medidores LED verticales que reaccionan al volumen real de reproducción.
   - **Faders Rectos 3D Delgados:** Sin botones `-` ni `+`, con captura gestual fluida por toque directo (`onStartShouldSetPanResponderCapture`).
@@ -87,6 +94,10 @@ Instalar o copiar el Android SDK en la carpeta local de usuario para evitar bloq
     - `OCTAVE`: `- [ OCT 0 ] +` (rango -3 a +3 octavas).
     - `TRANSPOSE`: `- [ TRP 0 ] +` (rango -12 a +12 semitonos).
     - Botones con latencia 0ms (`delayPressIn={0}`).
+- **Modal a Pantalla Completa `PERFORMANCE VOICE SELECTOR`:**
+  - Selector de canal de destino (`F1`, `F2`, `F3`, `F4`).
+  - Filtro por categorías (`ALL`, `PIANO`, `PADS`, `STRINGS`, `LEADS`, `BRASS`, `ORGAN`, `BASS`).
+  - Tarjetas de voces instrumentales con indicación de preset SoundFont y audición táctil inmediata.
 - **Panel Derecho (Consola Digital ADSR + Filtros + Tempo + Bancos + Modulación):**
   - **Tarjeta ENVELOPE (ADSR):**
     - **Gráfica Dinámica SVG (220x70):** Curva interactiva de envelope que ocupa de extremo a extremo la tarjeta con cuadrícula y 4 nodos interactivos resaltados (`A` Attack, `D` Delay, `S` Sustain, `R` Release).
@@ -103,25 +114,36 @@ Instalar o copiar el Android SDK en la carpeta local de usuario para evitar bloq
   - **Fader Horizontal `MODULATION`:**
     - Ubicado al fondo del panel derecho abarcando el 100% del ancho con cabezal máster 3D.
 
-### 2. Optimización de Latencia Táctil
-- Todos los elementos presionables (`TouchableOpacity`) utilizan `delayPressIn={0}` y `delayPressOut={0}` para respuesta inmediata de 0ms sin pérdida de clics rápidos.
-
-### 3. Módulos Nativos Específicos
+### 2. Módulos y Motor Nativo C++ Implementados
 - **`expo-battery`**: Módulo nativo autolinked para lectura real de la batería del dispositivo.
-- **`react-native-svg`**: Versión 15.2.0 para renderizado vectorial de curvas ADSR.
-- **`synth-engine`**: Módulo local en `modules/synth-engine/` compilado vía NDK C++ con `JNI_OnLoad`.
+- **`react-native-svg`**: Renderizado vectorial de curvas ADSR.
+- **`synth-engine` (C++ NDK / AAudio / TSF / Dual MIDI Driver)**:
+  - **Audio API Nativa**: `AAudio` (Android API 26+) para streaming en tiempo real estéreo PCM float a 44100 Hz con latencia ultrabaja (<5ms).
+  - **SoundFont Engine**: TinySoundFont (`tsf.h`) para decodificación y sintetizado multimuestra SF2.
+  - **Lector de Assets**: Carga directa mediante `AAssetManager` de archivos en `android/app/src/main/assets/soundfonts/`.
+  - **Sintetizador de Respaldar**: Motor sintético incorporado en C++ cuando no hay SF2 disponible.
+  - **DSP Filter & Envelope**: Filtro pasa-bajas `BiquadFilter.h` (Cutoff & Resonance) y generador envolvente `AdsrEnvelope.h` de 4 etapas aplicados en el callback de audio.
+  - **Controlador Dual MIDI (USB Host OTG + Bluetooth LE MIDI)**:
+    - **Driver Directo USB Host**: Enumeración directa de `UsbManager` con hilos Bulk IN en Kotlin para baja latencia (0ms) sin depender exclusivamente del servicio MIDI del SO.
+    - **Escáner BLE MIDI**: Soporte nativo para controladores inalámbricos M-VAVE / BLE MIDI vía UUID `03B80E5A-EDE8-4B33-A751-6CE34EC4C700`.
+    - **Inicialización Diferida en Expo**: `getMidiManager()` asegura la instanciación una vez listo el `ReactContext` de Android.
+    - **Alineación 16 KB**: Banderas `-Wl,-z,max-page-size=16384` en CMake para compatibilidad estricta con Android 15+.
+
+---
 
 ## Roadmap de Lógica a Implementar en Próximas Sesiones
 
-### Fase 1: Motor de Audio C++ DSP y SoundFonts (`modules/synth-engine`)
-- **Archivos SoundFont `.sf2`:** Colocar archivos de audio multimuestra en `android/app/src/main/assets/soundfonts/`.
-- **Decodificador `tsf.h` (TinySoundFont):** Integrar la cabecera C++ ligera en `modules/synth-engine/android/src/main/cpp/` para renderizado multitimbre SF2.
-- **Procesamiento DSP Real:** Conectar Cutoff y Resonancia a filtros Low-Pass Biquad en C++, y envolvente ADSR de 4 etapas a la ganancia de notas.
-- **Flujo Oboe/AAudio:** Transmitir audio estéreo a 44.1/48 kHz con buffers de latencia < 5ms.
+### Fase 1: Motor de Audio C++ DSP y SoundFonts (`modules/synth-engine`) [COMPLETADO]
+- [x] **Archivos SoundFont `.sf2`:** Carga mediante `AAssetManager` desde `android/app/src/main/assets/soundfonts/`.
+- [x] **Decodificador `tsf.h` (TinySoundFont):** Renderizado multitimbre SF2.
+- [x] **Procesamiento DSP Real:** Filtros pasa-bajas Biquad C++ (Cutoff / Resonance) y envolvente ADSR de 4 etapas.
+- [x] **Flujo AAudio:** Transmisión estéreo float a 44.1 kHz con latencia < 5ms.
+- [x] **Selector Modal de Voces:** Menú hamburguesa `≡` en `App.tsx` para cambiar voces en faders.
+- [x] **Gestión CRUD de SoundFonts (`.sf2` / `.sfz`):** Importación contextual por categoría (`+ IMPORTAR A PIANO`, `+ IMPORTAR A PADS`, etc.) con `expo-document-picker`, almacenamiento persistente local en `${FileSystem.documentDirectory}soundfonts/`, eliminación e índice JSON con soporte nativo de lectura C++ por rutas absolutas (`tsf_load_filename`).
 
-### Fase 2: Conectividad MIDI USB OTG (`src/hooks/useMidiDevices.ts`)
-- **Recepción MIDI Físico:** Conectar controladores MIDI / Yamaha PSR-E463 por USB-C OTG.
-- **Mapeo de Eventos:** Procesar `NoteOn`, `NoteOff`, `PitchBend` y `ControlChange` (Sustain Pedal CC64, Modulation Wheel CC1).
+### Fase 2: Conectividad MIDI USB OTG / BLE (`src/hooks/useMidiDevices.ts`) [COMPLETADO]
+- [x] **Recepción MIDI Físico e Inalámbrico:** Soporte dual para controladores USB-C OTG (M-VAVE 25, Yamaha PSR-E463) y Bluetooth LE MIDI.
+- [x] **Mapeo de Eventos:** Procesamiento nativo C++ de `NoteOn`, `NoteOff`, `PitchBend` y `ControlChange` (Sustain Pedal CC64, Modulation Wheel CC1).
 
 ### Fase 3: Arranger de Ritmos Yamaha `.STY` (`src/hooks/useArranger.ts`)
 - **Parser `.STY` (SFF1 / SFF2):** Decodificar pistas de batería, bajo y acompañamiento armónico.
@@ -130,4 +152,3 @@ Instalar o copiar el Android SDK en la carpeta local de usuario para evitar bloq
 
 ### Fase 4: Sistema de Bancos de Memoria y Presets (`BANK 1..8`)
 - **Guardado/Carga Instantánea:** Almacenar combinaciones completas de voz, volúmenes, filtros, tempo y ritmo en Async Storage / SQLite.
-
