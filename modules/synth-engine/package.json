@@ -1,0 +1,10 @@
+{
+  "name": "synth-engine",
+  "version": "1.0.0",
+  "description": "Native C++ / JSI Synth & Arranger Audio Engine for SynthConnect",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "peerDependencies": {
+    "expo": "*"
+  }
+}

@@ -1,0 +1,62 @@
+apply plugin: 'com.android.library'
+apply plugin: 'kotlin-android'
+
+group = 'expo.modules.synthengine'
+version = '1.0.0'
+
+def expoModulesCorePlugin = new File(projectDir, "../node_modules/expo-modules-core/android/expo-modules-core.gradle")
+if (expoModulesCorePlugin.exists()) {
+  apply from: expoModulesCorePlugin
+}
+
+android {
+  namespace 'expo.modules.synthengine'
+  compileSdkVersion safeExtGet("compileSdkVersion", 34)
+
+  defaultConfig {
+    minSdkVersion safeExtGet("minSdkVersion", 24)
+    targetSdkVersion safeExtGet("targetSdkVersion", 34)
+    versionCode 1
+    versionName "1.0.0"
+
+    externalNativeBuild {
+      cmake {
+        cppFlags "-std=c++17", "-frtti", "-fexceptions", "-Wl,-z,max-page-size=16384"
+        arguments "-DANDROID_STL=c++_shared", "-DCMAKE_SHARED_LINKER_FLAGS=-Wl,-z,max-page-size=16384"
+      }
+    }
+    ndk {
+      abiFilters 'armeabi-v7a', 'arm64-v8a', 'x86', 'x86_64'
+    }
+  }
+
+  externalNativeBuild {
+    cmake {
+      path "src/main/cpp/CMakeLists.txt"
+      version "3.22.1"
+    }
+  }
+
+  lintOptions {
+    abortOnError false
+  }
+
+  compileOptions {
+    sourceCompatibility JavaVersion.VERSION_17
+    targetCompatibility JavaVersion.VERSION_17
+  }
+
+  kotlinOptions {
+    jvmTarget = '17'
+  }
+}
+
+def safeExtGet(prop, fallback) {
+  rootProject.ext.has(prop) ? rootProject.ext.get(prop) : fallback
+}
+
+dependencies {
+  implementation project(':expo-modules-core')
+  implementation 'com.facebook.react:react-android:+'
+  implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk8"
+}
