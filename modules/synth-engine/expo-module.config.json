@@ -1,7 +1,8 @@
 {
   "name": "SynthEngine",
-  "platforms": ["android", "ios"],
+  "platforms": ["android"],
   "android": {
-    "package": "expo.modules.synthengine"
+    "package": "expo.modules.synthengine",
+    "modules": ["expo.modules.synthengine.SynthEngineModule"]
   }
 }

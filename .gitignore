@@ -40,3 +40,5 @@ yarn-error.log*
 Thumbs.db
 .idea/
 .vscode/
+.codegraph/
+crash_dump.txt

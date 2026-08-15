@@ -4,12 +4,23 @@
 - **No Emojis**: Do NOT use emojis in agent responses, comments, documentation, or code/UI components.
 - **Use Icons Only**: Use SVG icons, vector graphics, UI symbol glyphs, or standard clean text formatting instead of emojis.
 
+## Deployment and ADB Guidelines
+- **WiFi ADB**: Always deploy APKs to the physical device via WiFi ADB at `192.168.1.11:5555`. Before deploying, always run `adb connect 192.168.1.11:5555` first.
+- **ADB Path**: Use the full path `C:\Users\SMP\AppData\Local\Android\Sdk\platform-tools\adb.exe` for all ADB commands.
+- **Deploy Flow**: The standard deploy sequence is: `adb connect` -> `adb install -r` -> `adb shell am start`.
+- **Enable WiFi ADB**: If WiFi ADB is not active, connect the phone via USB and run `adb tcpip 5555` followed by `adb connect 192.168.1.11:5555`, then the USB cable can be removed.
+- **Build Type**: Use `gradlew assembleRelease` for standalone, offline, zero-red-screen deployment. Release APK location: `android\app\build\outputs\apk\release\app-release.apk`.
+- **CodeGraph**: In this repository indexed by CodeGraph (a `.codegraph/` directory exists), reach for CodeGraph BEFORE grep/find or reading files when exploring or locating code:
+  - **MCP tool**: `codegraph_explore` answers symbol source and call paths in one call.
+  - **Shell**: `codegraph explore "<query>"` or `codegraph node "<symbol>"`.
+
 ## Guia de Instalación y Requisitos para Nuevos Equipos (Setup Guide)
 
 Para clonar y continuar con el desarrollo de este proyecto en otro equipo de cómputo, se deben instalar y configurar los siguientes componentes:
 
 ### 1. Herramientas de Desarrollo Requeridas
 - **Node.js**: Versión 18.x o 20.x LTS.
+- **CodeGraph CLI**: Herramienta de análisis estático e indexación de grafos (`codegraph`).
 - **JDK (Java Development Kit)**: JDK 17 o JDK 21 (ejemplo: OpenJDK 21).
   - Configurar variable `JAVA_HOME`: `C:\Program Files\Android\openjdk\jdk-21.0.8` (o ruta equivalente).
 - **Android SDK y NDK**:
@@ -30,7 +41,7 @@ Instalar o copiar el Android SDK en la carpeta local de usuario para evitar bloq
   - `%ANDROID_HOME%\cmdline-tools\latest\bin`
 
 ### 3. Pasos de Sincronización y Configuración en una Nueva PC
-Dado que las carpetas de compilación pesadas (`node_modules/`, `android/build/`, `android/.gradle/`, `android/.cxx/`, `.expo/`) están ignoradas en Git para mantener el repositorio ultra liviano (< 1 MB), ejecuta los siguientes comandos al clonar:
+Dado que las carpetas de compilación pesadas (`node_modules/`, `android/build/`, `android/.gradle/`, `android/.cxx/`, `.expo/`, `.codegraph/`) están ignoradas en Git para mantener el repositorio ultra liviano (< 1 MB), ejecuta los siguientes comandos al clonar:
 
 1. **Instalar dependencias de Node**:
    ```bash
@@ -43,25 +54,25 @@ Dado que las carpetas de compilación pesadas (`node_modules/`, `android/build/`
    sdk.dir=C\:\\Users\\<TU_USUARIO>\\AppData\\Local\\Android\\Sdk
    ```
 
-3. **Ejecutar Autolinking de Expo Modules**:
+3. **Inicializar e Indexar CodeGraph**:
+   ```bash
+   codegraph init
+   ```
+
+4. **Ejecutar Autolinking de Expo Modules**:
    ```bash
    npx expo prebuild --platform android
    ```
 
-4. **Empaquetar el Bundle Offline JavaScript**:
-   ```bash
-   npx react-native bundle --platform android --dev false --entry-file index.js --bundle-output android/app/src/main/assets/index.android.bundle --assets-dest android/app/src/main/res
-   ```
-
-5. **Compilar el APK Nativo (C++ NDK + AAudio + SoundFonts + Synth Engine)**:
+5. **Compilar el APK Release Standalone (C++ NDK + AAudio + SoundFonts + Synth Engine)**:
    ```bash
    cd android
-   gradlew.bat assembleDebug
+   .\gradlew.bat assembleRelease
    ```
 
 6. **Instalar y Ejecutar en Dispositivo Físico o Emulador**:
    ```bash
-   adb install -r android\app\build\outputs\apk\debug\app-debug.apk
+   adb install -r android\app\build\outputs\apk\release\app-release.apk
    adb shell am start -n com.synthconnect.app/.MainActivity
    ```
 
@@ -69,86 +80,81 @@ Dado que las carpetas de compilación pesadas (`node_modules/`, `android/build/`
 - **Motor Sintetizador C++ NDK**: Se encuentra en `modules/synth-engine/android/src/main/cpp/`. Requiere el punto de entrada `JNI_OnLoad` en `OnLoad.cpp` para su registro en Android.
 - **Alineación ELF 16 KB**: En `modules/synth-engine/android/build.gradle`, se mantienen las banderas CMake `-Wl,-z,max-page-size=16384` y `-DANDROID_PLATFORM=android-26` para compatibilidad con versiones recientes de Android y AAudio.
 - **Ruta de SoundFonts `.sf2`**: Archivos de muestras en `android/app/src/main/assets/soundfonts/`.
+- **Dependencia Expo Obligatoria**: En `android/app/build.gradle` debe estar presente `implementation project(':expo')` para que `ExpoModulesPackageList` esté registrado en el runtime sin errores de `NullPointerException`.
 
 ---
 
 ## Estado Actual del Proyecto y Arquitectura del Código (Session Context)
 
 ### 1. Resumen de la Interfaz y Componentes Implementados (`App.tsx`)
-- **Header Principal Centrado:**
-  - **Izquierda:** Estado del instrumento MIDI detectado (`PSR-E463 USB OK | Local OFF`).
-  - **Centro:** Nombre de la aplicación `SYNTH CONNECT Pro` perfectamente centrado.
-  - **Derecha:** Hora real del dispositivo (`H:MM AM/PM`) que se actualiza automáticamente cada minuto y porcentaje real de batería consumiendo el módulo nativo `expo-battery`.
-- **Panel Izquierdo (Styles Yamaha .STY):**
-  - Lista interactiva de ritmos (`Cumbia Professional`, `Pop Rock Ballad`, etc.).
-  - Slider horizontal **`STYLE VOLUME`** 3D con soporte de arrastre gestual continuo (`PanResponder`).
-  - 8 Botones circulares de sección (`INTRO A..D`, `MAIN A..D`).
-  - Botones de transporte (`INTRO`, `START/STOP` gigante con resplandor, `ENDING`).
+- **Header Principal Fijo y Persistente:**
+  - **Izquierda:** Estado de conectividad MIDI OTG (`PSR-E463 USB OK` o `BUSCANDO MIDI OTG`) y botón modal **BT MIDI** para escanear y conectar teclados Bluetooth LE inalámbricos (M-Vave).
+  - **Centro:** Título de la aplicación `SYNTH CONNECT Pro` perfectamente centrado.
+  - **Derecha:** Hora en tiempo real del dispositivo (`H:MM AM/PM`) y porcentaje de batería en vivo consumiendo `expo-battery`.
+- **Arquitectura de Navegación Integrada a Pantalla Completa (Cero Popups Flotantes):**
+  - **`currentView: 'MAIN' | 'STYLE_LIBRARY' | 'VOICE_LIBRARY'`**:
+    - **`MAIN`**: Consola principal de 3 paneles (Arranger de ritmos, 4 Faders de voces, Consola ADSR/Filtros/Bancos).
+    - **`STYLE_LIBRARY`**: Navegador a pantalla completa de la librería de ritmos (.STY).
+    - **`VOICE_LIBRARY`**: Navegador a pantalla completa de instrumentos y SoundFonts (.SF2).
+    - Botón superior `<BackArrowIcon />` (`28x28`) para regresar instantáneamente a la consola principal.
+    - Soporte completo para el botón de retroceso de hardware / gestual de Android (`BackHandler`).
+- **Iconografía Vectorial SVG Nativa (Cero Emojis):**
+  - Componentes SVG limpios: `<SearchIcon />`, `<BackArrowIcon />`, `<PlusIcon />`, `<EditIcon />`, `<TrashIcon />`, `<AssignIcon />`, `<CloseIcon />`, `<BluetoothIcon />`.
+- **Panel de Ritmos (.STY) y Transporte Rectangular:**
+  - Lista de ritmos con selección táctil directa.
+  - Slider horizontal `STYLE VOLUME` 3D con arrastre gestual continuo (`PanResponder`).
+  - 8 Botones rectangulares de sección (`INTRO A..D`, `MAIN A..D`) con medidor de 4 beats en tiempo real.
+  - Barra de transporte rectangular estilizada de 4 columnas:
+    - `[ SYNC START ]`: Estado LED verde activo.
+    - `[ ACMP ON/OFF ]`: Estado LED cyan activo.
+    - `[ START / STOP ]`: Botón principal rectangular con estado dinámico (Cyan en STOP, Rojo en PLAYING).
+    - `[ FILL IN ]`: Botón rectangular de remate de variación.
+- **Librería de Ritmos (.STY):**
+  - Barra de búsqueda con `<SearchIcon />` y botón `<CloseIcon />` para limpiar texto.
+  - Selector de categorías con contador dinámico en tiempo real (`ALL (15)`, `LATIN (8)`...).
+  - Botón de importar `<PlusIcon />` en Cyan brillante.
+  - Tarjetas de ritmos enumeradas (`#01`, `#02`...) con selección táctil directa y botones de icono compactos `<EditIcon />` y `<TrashIcon />`.
 - **Panel Central (Performance Layers):**
-  - **Header con Menú Hamburguesa `≡`:** Abre la consola modal a pantalla completa para selección de sonidos/voces.
-  - **4 Canales Faders Independientes:** Cada fader de voz (`Yamaha CFX Grand`, `Ambient Pad Warm`, `Syn Strings Symphony`, `Synth Lead Moog Saw`) en su propia tarjeta separada.
+  - **Header con Menú Hamburguesa `≡`:** Abre la librería de voces a pantalla completa.
+  - **4 Canales Faders Independientes:** Cada fader de voz (`Concert Grand Piano`, `Ambient Pad Warm`, `Syn Strings Symphony`, `Synth Lead Moog Saw`) en su tarjeta dedicada con VU meter LED dinámico.
   - **Borde de Selección Cyan:** Al presionar o arrastrar un canal, se resalta con borde azul cyan brillante (`#00E5FF`).
-  - **VU Meters Dinámicos:** Medidores LED verticales que reaccionan al volumen real de reproducción.
-  - **Faders Rectos 3D Delgados:** Sin botones `-` ni `+`, con captura gestual fluida por toque directo (`onStartShouldSetPanResponderCapture`).
   - **Controles Inferiores `OCTAVE` y `TRANSPOSE`:**
-    - `OCTAVE`: `- [ OCT 0 ] +` (rango -3 a +3 octavas).
-    - `TRANSPOSE`: `- [ TRP 0 ] +` (rango -12 a +12 semitonos).
-    - Botones con latencia 0ms (`delayPressIn={0}`).
-- **Modal a Pantalla Completa `PERFORMANCE VOICE SELECTOR`:**
-  - Selector de canal de destino (`F1`, `F2`, `F3`, `F4`).
-  - Filtro por categorías (`ALL`, `PIANO`, `PADS`, `STRINGS`, `LEADS`, `BRASS`, `ORGAN`, `BASS`).
-  - Tarjetas de voces instrumentales con indicación de preset SoundFont y audición táctil inmediata.
+    - `OCTAVE`: `- [ OCT 0 ] +` individual para el fader seleccionado (rango -3 a +3).
+    - `TRANSPOSE`: `- [ TRP 0 ] +` global para todos los faders (rango -12 a +12 semitonos).
+- **Librería de Voces & SoundFonts:**
+  - Selector de canal destino (`F1`, `F2`, `F3`, `F4`).
+  - Barra de búsqueda con `<SearchIcon />` y botón `<CloseIcon />`.
+  - Categorías con contadores dinámicos (`ALL`, `PIANO`, `PADS`, `STRINGS`, `LEADS`, `BRASS`, `ORGAN`, `BASS`, `CUSTOM`).
+  - Botón de importar .SF2 con `<PlusIcon />`.
+  - Tarjetas de voces enumeradas (`#001`, `#002`...):
+    - Toque directo en la tarjeta para audición táctil instantánea.
+    - Botón compacto de asignación `<AssignIcon />` que se ilumina al estar asignado al fader destino.
+    - Botón compacto de edición de nombre `<EditIcon />`.
+    - Botón compacto de eliminación `<TrashIcon />`.
 - **Panel Derecho (Consola Digital ADSR + Filtros + Tempo + Bancos + Modulación):**
   - **Tarjeta ENVELOPE (ADSR):**
-    - **Gráfica Dinámica SVG (220x70):** Curva interactiva de envelope que ocupa de extremo a extremo la tarjeta con cuadrícula y 4 nodos interactivos resaltados (`A` Attack, `D` Delay, `S` Sustain, `R` Release).
-    - **Perilla Maestra ADSR (Izquierda):** Dial concéntrico 3D naranja para ajustar el valor del parámetro seleccionado.
-    - **Fader Vertical CUTOFF (Derecha):** Control vertical delgado de 68px de alto para el corte de frecuencia de filtro.
-    - **4 Botones de Parámetros ADSR:** Pills (`ATTACK`, `DELAY`, `SUSTAIN`, `RELEASE`) con valor numérico en tiempo real.
-  - **Tarjeta Independiente `TEMPO CONTROL`:**
-    - Ubicada directamente debajo de los 4 botones de ADSR.
-    - Botones gigantes `-` y `+` con respuesta ultrarrápida (0ms latencia).
-  - **Fader Horizontal `RESONANCE`:**
-    - Tarjeta independiente ubicada en el espacio libre debajo de Tempo Control y arriba de Modulación.
-  - **Tarjeta `MEMORY BANKS` (Columna Derecha):**
-    - 8 Bancos de Memoria (`BANK 1` a `BANK 8`) ocupando en 2 columnas x 4 filas toda la altura del panel derecho.
-  - **Fader Horizontal `MODULATION`:**
-    - Ubicado al fondo del panel derecho abarcando el 100% del ancho con cabezal máster 3D.
+    - Gráfica interactiva SVG (220x70) con 4 nodos coloreados (`A`, `D`, `S`, `R`).
+    - Perilla maestra ADSR (Izquierda) para el parámetro seleccionado del fader activo.
+    - Fader vertical `CUTOFF` (Derecha) para corte de frecuencia del fader activo.
+    - 4 Botones ADSR (`ATTACK`, `DELAY`, `SUSTAIN`, `RELEASE`) con valor numérico en tiempo real.
+  - **Tarjeta Independiente `TEMPO CONTROL`:** Botones `-` y `+` con 0ms de latencia.
+  - **Fader Horizontal `RESONANCE`:** Control de resonancia del filtro del fader activo.
+  - **Tarjeta `MEMORY BANKS`:** 8 Bancos de Memoria (`BANK 1` a `BANK 8`) con pulsación corta para cargar y pulsación de 1s para guardar toda la configuración.
+  - **Fader Horizontal `MODULATION`:** Control máster de modulación al 100% de ancho.
 
 ### 2. Módulos y Motor Nativo C++ Implementados
-- **`expo-battery`**: Módulo nativo autolinked para lectura real de la batería del dispositivo.
-- **`react-native-svg`**: Renderizado vectorial de curvas ADSR.
+- **`expo-battery`**: Módulo nativo para lectura real de la batería del dispositivo.
+- **`react-native-svg`**: Renderizado vectorial de curvas ADSR e iconografía SVG del sistema.
 - **`synth-engine` (C++ NDK / AAudio / TSF / Dual MIDI Driver)**:
-  - **Audio API Nativa**: `AAudio` (Android API 26+) para streaming en tiempo real estéreo PCM float a 44100 Hz con latencia ultrabaja (<5ms).
-  - **SoundFont Engine**: TinySoundFont (`tsf.h`) para decodificación y sintetizado multimuestra SF2.
-  - **Lector de Assets**: Carga directa mediante `AAssetManager` de archivos en `android/app/src/main/assets/soundfonts/`.
-  - **Sintetizador de Respaldar**: Motor sintético incorporado en C++ cuando no hay SF2 disponible.
-  - **DSP Filter & Envelope**: Filtro pasa-bajas `BiquadFilter.h` (Cutoff & Resonance) y generador envolvente `AdsrEnvelope.h` de 4 etapas aplicados en el callback de audio.
+  - **Audio API Nativa**: `AAudio` (Android API 26+) para streaming estéreo PCM float a 44100 Hz con latencia ultrabaja (<5ms).
+  - **Instancias TSF Aisladas**: Copias independientes de TinySoundFont (`tsf_copy`) por cada fader (`mLayers[0..3]`), canal de acompañamiento de ritmo (`mStyleTsf`) y preescucha (`mAuditionTsf`).
+  - **DSP de Alta Fidelidad**: Headroom a -4.5dB en instancias TSF y saturación analógica suave (`tanhf`) para evitar distorsión o clipping.
+  - **Mapeo de Notas Activas y Cero Notas Pegadas**: Estructura `activePlayingNotes` en cada capa para rastrear la transposición exacta de cada nota física y garantizar que `noteOff` siempre la apague limpiamente.
+  - **Soporte CC 64 (Damper/Sustain Pedal)**: Integración en `controlChange` que activa `tsf_channel_set_sustain` en todas las capas activas.
+  - **Parámetros por Capa (Stem)**: Soporte nativo para octava, cutoff, resonancia y envolvente ADSR (`AdsrEnvelope.h` / `BiquadFilter.h`) independientes por fader.
+  - **Transposición Global**: Desplazamiento por semitonos aplicado a todas las capas en C++.
   - **Controlador Dual MIDI (USB Host OTG + Bluetooth LE MIDI)**:
-    - **Driver Directo USB Host**: Enumeración directa de `UsbManager` con hilos Bulk IN en Kotlin para baja latencia (0ms) sin depender exclusivamente del servicio MIDI del SO.
-    - **Escáner BLE MIDI**: Soporte nativo para controladores inalámbricos M-VAVE / BLE MIDI vía UUID `03B80E5A-EDE8-4B33-A751-6CE34EC4C700`.
-    - **Inicialización Diferida en Expo**: `getMidiManager()` asegura la instanciación una vez listo el `ReactContext` de Android.
-    - **Alineación 16 KB**: Banderas `-Wl,-z,max-page-size=16384` en CMake para compatibilidad estricta con Android 15+.
-
----
-
-## Roadmap de Lógica a Implementar en Próximas Sesiones
-
-### Fase 1: Motor de Audio C++ DSP y SoundFonts (`modules/synth-engine`) [COMPLETADO]
-- [x] **Archivos SoundFont `.sf2`:** Carga mediante `AAssetManager` desde `android/app/src/main/assets/soundfonts/`.
-- [x] **Decodificador `tsf.h` (TinySoundFont):** Renderizado multitimbre SF2.
-- [x] **Procesamiento DSP Real:** Filtros pasa-bajas Biquad C++ (Cutoff / Resonance) y envolvente ADSR de 4 etapas.
-- [x] **Flujo AAudio:** Transmisión estéreo float a 44.1 kHz con latencia < 5ms.
-- [x] **Selector Modal de Voces:** Menú hamburguesa `≡` en `App.tsx` para cambiar voces en faders.
-- [x] **Gestión CRUD de SoundFonts (`.sf2` / `.sfz`):** Importación contextual por categoría (`+ IMPORTAR A PIANO`, `+ IMPORTAR A PADS`, etc.) con `expo-document-picker`, almacenamiento persistente local en `${FileSystem.documentDirectory}soundfonts/`, eliminación e índice JSON con soporte nativo de lectura C++ por rutas absolutas (`tsf_load_filename`).
-
-### Fase 2: Conectividad MIDI USB OTG / BLE (`src/hooks/useMidiDevices.ts`) [COMPLETADO]
-- [x] **Recepción MIDI Físico e Inalámbrico:** Soporte dual para controladores USB-C OTG (M-VAVE 25, Yamaha PSR-E463) y Bluetooth LE MIDI.
-- [x] **Mapeo de Eventos:** Procesamiento nativo C++ de `NoteOn`, `NoteOff`, `PitchBend` y `ControlChange` (Sustain Pedal CC64, Modulation Wheel CC1).
-
-### Fase 3: Arranger de Ritmos Yamaha `.STY` (`src/hooks/useArranger.ts`)
-- **Parser `.STY` (SFF1 / SFF2):** Decodificar pistas de batería, bajo y acompañamiento armónico.
-- **Reconocimiento de Acordes C++ (`ChordRecognizer.cpp`):** Clasificar acordes de mano izquierda (`Major`, `Minor`, `7th`, `Dim`) para transposición armónica en vivo.
-- **Sincronización BPM Clock:** Reloj de tiempo real para variaciones `INTRO A..D`, `MAIN A..D` y `ENDING`.
-
-### Fase 4: Sistema de Bancos de Memoria y Presets (`BANK 1..8`)
-- **Guardado/Carga Instantánea:** Almacenar combinaciones completas de voz, volúmenes, filtros, tempo y ritmo en Async Storage / SQLite.
+    - Enumeración directa de `UsbManager` con hilos Bulk IN en Kotlin para baja latencia (0ms).
+    - Escáner y conexión BLE MIDI para teclados inalámbricos M-VAVE / BLE MIDI vía UUID `03B80E5A-EDE8-4B33-A751-6CE34EC4C700`.
+    - Soporte completo para **MIDI Running Status** en `MidiReceiverImpl` para evitar descarte de eventos `Note Off` en ráfagas rápidas.
+  - **Alineación 16 KB**: Banderas `-Wl,-z,max-page-size=16384` en CMake para compatibilidad estricta con Android 15+.

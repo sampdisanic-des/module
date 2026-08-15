@@ -102,6 +102,18 @@ class MidiManager(private val context: Context) {
     }
   }
 
+  data class BleDiscoveredDevice(
+    val name: String,
+    val address: String,
+    val rssi: Int,
+    val timestamp: Long = System.currentTimeMillis()
+  )
+
+  private val discoveredBleMap = java.util.concurrent.ConcurrentHashMap<String, BleDiscoveredDevice>()
+  @Volatile private var isScanningBle: Boolean = false
+  private var activeScanCallback: ScanCallback? = null
+  private val scanTimeoutHandler = Handler(Looper.getMainLooper())
+
   init {
     try {
       systemMidiManager?.registerDeviceCallback(object : android.media.midi.MidiManager.DeviceCallback() {
@@ -142,31 +154,143 @@ class MidiManager(private val context: Context) {
     } catch (e: Exception) {
       Log.w("MidiManager", "Error registrando BroadcastReceiver de USB:", e)
     }
+  }
 
-    startBleScan()
+  fun isBluetoothEnabled(): Boolean {
+    return try {
+      bluetoothAdapter?.isEnabled == true
+    } catch (e: Exception) {
+      false
+    }
+  }
+
+  fun isBleScanning(): Boolean {
+    return isScanningBle
+  }
+
+  fun startBleScanExplicit(): Boolean {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+      val hasScan = context.checkSelfPermission(android.Manifest.permission.BLUETOOTH_SCAN) == android.content.pm.PackageManager.PERMISSION_GRANTED
+      val hasConnect = context.checkSelfPermission(android.Manifest.permission.BLUETOOTH_CONNECT) == android.content.pm.PackageManager.PERMISSION_GRANTED
+      if (!hasScan || !hasConnect) {
+        logDiag("MidiManager", "[BLE] Permisos BLUETOOTH_SCAN / BLUETOOTH_CONNECT no concedidos.", "WARN")
+        return false
+      }
+    }
+
+    val scanner = bluetoothAdapter?.bluetoothLeScanner
+    if (scanner == null) {
+      logDiag("MidiManager", "[BLE] BluetoothLeScanner es null. Bluetooth apagado o no soportado.", "WARN")
+      return false
+    }
+
+    stopBleScan()
+    discoveredBleMap.clear()
+    isScanningBle = true
+
+    try {
+      val settings = ScanSettings.Builder()
+        .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+        .build()
+
+      val callback = object : ScanCallback() {
+        override fun onScanResult(callbackType: Int, result: ScanResult?) {
+          val bleDev = result?.device ?: return
+          val rawName = try {
+            bleDev.name ?: result.scanRecord?.deviceName ?: "Dispositivo Bluetooth"
+          } catch (e: SecurityException) {
+            "Dispositivo Bluetooth"
+          }
+
+          val address = bleDev.address ?: return
+          val rssi = result.rssi
+
+          discoveredBleMap[address] = BleDiscoveredDevice(rawName, address, rssi)
+          logDiag("MidiManager", "[BLE Scan] Detectado: $rawName ($address) RSSI: $rssi dBm")
+        }
+
+        override fun onScanFailed(errorCode: Int) {
+          logDiag("MidiManager", "[BLE Scan Failed] Código de error: $errorCode", "ERROR")
+          isScanningBle = false
+        }
+      }
+
+      activeScanCallback = callback
+      scanner.startScan(emptyList(), settings, callback)
+      logDiag("MidiManager", "[BLE Scan] Escaneo activo iniciado (amplio para M-Vave y teclados BLE)")
+
+      scanTimeoutHandler.removeCallbacksAndMessages(null)
+      scanTimeoutHandler.postDelayed({
+        stopBleScan()
+      }, 15000)
+
+      return true
+    } catch (e: Exception) {
+      logDiag("MidiManager", "[BLE Scan Error] ${e.message}", "ERROR")
+      isScanningBle = false
+      return false
+    }
+  }
+
+  fun stopBleScan(): Boolean {
+    if (!isScanningBle && activeScanCallback == null) return true
+    try {
+      activeScanCallback?.let {
+        bluetoothAdapter?.bluetoothLeScanner?.stopScan(it)
+      }
+    } catch (e: Exception) {
+      logDiag("MidiManager", "[BLE Stop Error] ${e.message}", "WARN")
+    }
+    activeScanCallback = null
+    isScanningBle = false
+    logDiag("MidiManager", "[BLE Scan] Escaneo detenido.")
+    return true
+  }
+
+  fun getDiscoveredBleDevices(): List<Map<String, Any>> {
+    return discoveredBleMap.values.map {
+      mapOf(
+        "name" to it.name,
+        "address" to it.address,
+        "rssi" to it.rssi,
+        "isConnected" to (openMidiDevice?.info?.properties?.getString(MidiDeviceInfo.PROPERTY_NAME)?.contains(it.name, ignoreCase = true) == true)
+      )
+    }
+  }
+
+  fun connectBleDeviceByAddress(address: String, onConnected: (Boolean) -> Unit) {
+    stopBleScan()
+    val bleAdapter = bluetoothAdapter
+    if (bleAdapter == null) {
+      logDiag("MidiManager", "[BLE Connect] BluetoothAdapter es null", "ERROR")
+      onConnected(false)
+      return
+    }
+
+    try {
+      val bleDev = bleAdapter.getRemoteDevice(address)
+      val devName = try { bleDev.name ?: address } catch (e: SecurityException) { address }
+      logDiag("MidiManager", "[BLE Connect] Conectando a $devName ($address)...")
+
+      systemMidiManager?.openBluetoothDevice(bleDev, { device ->
+        if (device != null) {
+          logDiag("MidiManager", "[BLE Connect OK] Android System MIDI reconoció $devName")
+          connectToDevice(device.info) { success ->
+            onConnected(success)
+          }
+        } else {
+          logDiag("MidiManager", "[BLE Connect Error] openBluetoothDevice devolvió null para $address", "ERROR")
+          onConnected(false)
+        }
+      }, Handler(Looper.getMainLooper()))
+    } catch (e: Exception) {
+      logDiag("MidiManager", "[BLE Connect Exception] ${e.message}", "ERROR")
+      onConnected(false)
+    }
   }
 
   fun startBleScan() {
-    val scanner = bluetoothAdapter?.bluetoothLeScanner ?: return
-    try {
-      val filter = ScanFilter.Builder().setServiceUuid(MIDI_SERVICE_UUID).build()
-      val settings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build()
-      scanner.startScan(listOf(filter), settings, object : ScanCallback() {
-        override fun onScanResult(callbackType: Int, result: ScanResult?) {
-          val bleDev = result?.device ?: return
-          Log.i("MidiManager", "[BLE MIDI Detectado] ${bleDev.name ?: "Teclado BLE"} (${bleDev.address})")
-          systemMidiManager?.openBluetoothDevice(bleDev, { device ->
-            if (device != null) {
-              Log.i("MidiManager", "[BLE MIDI Conectado OK] ${bleDev.name}")
-              connectToDevice(device.info) {}
-            }
-          }, Handler(Looper.getMainLooper()))
-        }
-      })
-      Log.i("MidiManager", "Escáner Bluetooth LE MIDI activo!")
-    } catch (e: Exception) {
-      Log.w("MidiManager", "Error al iniciar escaneo BLE MIDI:", e)
-    }
+    startBleScanExplicit()
   }
 
   fun scanDevices(): List<MidiDeviceHandler> {
@@ -209,6 +333,18 @@ class MidiManager(private val context: Context) {
 
           Log.i("MidiManager", "[UsbManager Entry] DeviceName: ${usbDev.deviceName} | Name: $devName | VendorID: ${usbDev.vendorId} | ProductID: ${usbDev.productId} | Class: ${usbDev.deviceClass} | Interfaces: ${usbDev.interfaceCount}")
 
+          // Solicitar permiso de USB explícito a Android si aún no fue concedido
+          if (!usbManager.hasPermission(usbDev)) {
+            logDiag("MidiManager", "Solicitando permiso de USB a Android para: $devName (VID:${usbDev.vendorId})", "INFO")
+            val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+              PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            } else {
+              PendingIntent.FLAG_UPDATE_CURRENT
+            }
+            val permissionIntent = PendingIntent.getBroadcast(context, 0, Intent(ACTION_USB_PERMISSION), flags)
+            usbManager.requestPermission(usbDev, permissionIntent)
+          }
+
           if (isMidiUsbDevice(usbDev)) {
             val id = "usb_direct_${usbDev.deviceId}"
             result.add(MidiDeviceHandler(id, "$devName (USB OTG)", "USB", nativeUsbDevice = usbDev))
@@ -240,6 +376,9 @@ class MidiManager(private val context: Context) {
   }
 
   private fun isMidiUsbDevice(usbDevice: UsbDevice): Boolean {
+    if (usbDevice.deviceClass == UsbConstants.USB_CLASS_AUDIO || usbDevice.deviceClass == 0xFF) {
+      return true
+    }
     for (i in 0 until usbDevice.interfaceCount) {
       val iface = usbDevice.getInterface(i)
       val cls = iface.interfaceClass
@@ -247,6 +386,12 @@ class MidiManager(private val context: Context) {
       logDiag("MidiManager", "  Interface #$i -> Class: $cls | Subclass: $subcls | Endpoints: ${iface.endpointCount}")
       if (cls == UsbConstants.USB_CLASS_AUDIO || cls == 0xFF || subcls == 3 || subcls == 1 || subcls == 0) {
         return true
+      }
+      for (e in 0 until iface.endpointCount) {
+        val ep = iface.getEndpoint(e)
+        if (ep.direction == UsbConstants.USB_DIR_IN) {
+          return true
+        }
       }
     }
     return usbDevice.interfaceCount > 0
@@ -264,7 +409,6 @@ class MidiManager(private val context: Context) {
     logDiag("MidiManager", "[System MIDI] Abriendo dispositivo Android System MIDI #${deviceInfo.id}...")
     systemMidiManager.openDevice(deviceInfo, { device ->
       if (device != null) {
-        openMidiDevice = device
         val info = device.info
         activeOutputPorts.clear()
         logDiag("MidiManager", "[System MIDI] Dispositivo abierto OK: ${info.id}. Total de puertos: ${info.ports.size}")
@@ -288,13 +432,26 @@ class MidiManager(private val context: Context) {
         }
 
         if (activeOutputPorts.isNotEmpty()) {
+          openMidiDevice = device
           logDiag("MidiManager", "[ÉXITO TOTAL] Escuchando activamente en ${activeOutputPorts.size} puertos MIDI!")
           onConnected(true)
         } else {
-          logDiag("MidiManager", "[ERROR] No se pudo abrir ningún puerto de salida MIDI", "ERROR")
+          openMidiDevice = null
+          logDiag("MidiManager", "[WARN] No se pudo abrir ningún puerto de salida MIDI en System MIDI. Intentando Direct USB Fallback...", "WARN")
           onConnected(false)
+
+          // Fallback a Direct USB
+          val usbList = usbManager?.deviceList
+          if (!usbList.isNullOrEmpty()) {
+            val firstUsb = usbList.values.firstOrNull { isMidiUsbDevice(it) }
+            if (firstUsb != null) {
+              logDiag("MidiManager", "[Fallback] Conectando mediante Direct USB Host a: ${firstUsb.deviceName}")
+              connectDirectUsbDevice(firstUsb)
+            }
+          }
         }
       } else {
+        openMidiDevice = null
         logDiag("MidiManager", "[ERROR] systemMidiManager.openDevice retornó null", "ERROR")
         onConnected(false)
       }
@@ -552,10 +709,10 @@ class MidiManager(private val context: Context) {
   }
 
   private inner class MidiReceiverImpl : MidiReceiver() {
+    private var runningStatus: Int = 0
+
     override fun onSend(data: ByteArray?, offset: Int, count: Int, timestamp: Long) {
       if (data == null || count <= 0) return
-
-      Log.i("MidiManager", "[MIDI RECV ON_SEND] Recibidos $count bytes de datos MIDI!")
 
       var index = offset
       val end = offset + count
@@ -563,62 +720,81 @@ class MidiManager(private val context: Context) {
       while (index < end) {
         val b = data[index].toInt() and 0xFF
 
+        val status: Int
         if (b >= 0x80) {
-          val command = b and 0xF0
-          val channel = b and 0x0F
-
-          when (command) {
-            0x90 -> {
-              if (index + 2 < end) {
-                val note = data[index + 1].toInt() and 0x7F
-                val velocity = data[index + 2].toInt() and 0x7F
-                Log.i("MidiManager", "[MIDI NOTE ON] Nota: $note | Vel: $velocity")
-                if (velocity > 0) {
-                  listener?.onNoteOn(note, velocity)
-                } else {
-                  listener?.onNoteOff(note)
-                }
-                index += 3
-              } else break
-            }
-            0x80 -> {
-              if (index + 2 < end) {
-                val note = data[index + 1].toInt() and 0x7F
-                Log.i("MidiManager", "[MIDI NOTE OFF] Nota: $note")
-                listener?.onNoteOff(note)
-                index += 3
-              } else break
-            }
-            0xB0 -> {
-              if (index + 2 < end) {
-                val cc = data[index + 1].toInt() and 0x7F
-                val value = data[index + 2].toInt() and 0x7F
-                Log.i("MidiManager", "[MIDI CC] CC: $cc | Val: $value")
-                listener?.onControlChange(channel, cc, value)
-                index += 3
-              } else break
-            }
-            0xC0 -> {
-              if (index + 1 < end) {
-                val program = data[index + 1].toInt() and 0x7F
-                listener?.onProgramChange(channel, program)
-                index += 2
-              } else break
-            }
-            0xE0 -> {
-              if (index + 2 < end) {
-                val lsb = data[index + 1].toInt() and 0x7F
-                val msb = data[index + 2].toInt() and 0x7F
-                val pitch = (msb shl 7) or lsb
-                listener?.onPitchBend(channel, pitch)
-                index += 3
-              } else break
-            }
-            else -> index++
+          if (b < 0xF0) {
+            runningStatus = b
+            index++
+          } else if (b >= 0xF8) {
+            // Mensaje de tiempo real MIDI (Clock, Active Sensing, etc.)
+            index++
+            continue
+          } else {
+            // SysEx u otro mensaje del sistema
+            runningStatus = 0
+            index++
+            continue
           }
+          status = runningStatus
         } else {
-          // CIN header byte (0x00..0x0F)
+          status = runningStatus
+        }
+
+        if (status == 0) {
           index++
+          continue
+        }
+
+        val command = status and 0xF0
+        val channel = status and 0x0F
+
+        when (command) {
+          0x90 -> {
+            if (index + 1 < end) {
+              val note = data[index].toInt() and 0x7F
+              val velocity = data[index + 1].toInt() and 0x7F
+              if (velocity > 0) {
+                listener?.onNoteOn(note, velocity)
+              } else {
+                listener?.onNoteOff(note)
+              }
+              index += 2
+            } else break
+          }
+          0x80 -> {
+            if (index + 1 < end) {
+              val note = data[index].toInt() and 0x7F
+              listener?.onNoteOff(note)
+              index += 2
+            } else break
+          }
+          0xB0 -> {
+            if (index + 1 < end) {
+              val cc = data[index].toInt() and 0x7F
+              val value = data[index + 1].toInt() and 0x7F
+              listener?.onControlChange(channel, cc, value)
+              index += 2
+            } else break
+          }
+          0xC0 -> {
+            if (index < end) {
+              val program = data[index].toInt() and 0x7F
+              listener?.onProgramChange(channel, program)
+              index += 1
+            } else break
+          }
+          0xE0 -> {
+            if (index + 1 < end) {
+              val lsb = data[index].toInt() and 0x7F
+              val msb = data[index + 1].toInt() and 0x7F
+              val pitch = (msb shl 7) or lsb
+              listener?.onPitchBend(channel, pitch)
+              index += 2
+            } else break
+          }
+          else -> {
+            index++
+          }
         }
       }
     }

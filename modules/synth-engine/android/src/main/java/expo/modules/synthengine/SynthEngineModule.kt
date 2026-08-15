@@ -21,8 +21,38 @@ class SynthEngineModule : Module() {
   private external fun nativeInitialize(): Boolean
   private external fun nativeInitializeWithAssets(assetManager: AssetManager): Boolean
   private external fun nativeLoadSoundFont(assetPath: String): Boolean
+  private external fun nativeSetLayerMix(layerIndex: Int, volume: Float, mute: Boolean, solo: Boolean)
+  private external fun nativeSetLayerVoice(layerIndex: Int, voiceName: String, presetIndex: Int, fontPath: String): Boolean
+  private external fun nativeSetLayerOctave(layerIndex: Int, octave: Int)
+  private external fun nativeSetGlobalTranspose(transpose: Int)
+  private external fun nativeSetLayerParam(layerIndex: Int, paramName: String, value: Float)
+  private external fun nativeGetChannelLevels(): FloatArray
+  private external fun nativeAuditionVoice(presetIndex: Int, fontPath: String, note: Int, velocity: Int)
+  private external fun nativeAuditionStop(note: Int)
   private external fun nativeNoteOn(note: Int, velocity: Int)
   private external fun nativeNoteOff(note: Int)
+
+  // Métodos de Acompañamiento / Estilos (.STY)
+  private external fun nativeStyleNoteOn(channel: Int, note: Int, velocity: Int, program: Int)
+  private external fun nativeStyleNoteOff(channel: Int, note: Int)
+  private external fun nativeSetStyleMasterVolume(volume: Float)
+  private external fun nativeStyleAllNotesOff()
+
+  // Secuenciador Nativo C++ (Precisión de Muestra 0ms Jitter)
+  private external fun nativeClearStyleData()
+  private external fun nativeSetStylePpq(ppq: Int)
+  private external fun nativeLoadStyleSectionEvents(sectionName: String, totalTicks: Int, eventsData: String)
+  private external fun nativeStartStylePlayback(bpm: Int, accompanimentOn: Boolean)
+  private external fun nativeStopStylePlayback()
+  private external fun nativeSetStyleAccompaniment(enabled: Boolean)
+  private external fun nativeSetStyleBpm(bpm: Int)
+  private external fun nativeSetStyleSection(section: String)
+  private external fun nativeQueueNextStyleSection(section: String)
+  private external fun nativeIsStylePlaying(): Boolean
+  private external fun nativeGetCurrentBeat(): Int
+  private external fun nativeGetCurrentSection(): String
+  private external fun nativeGetQueuedSection(): String
+
   private external fun nativeSetParam(paramName: String, value: Float)
   private external fun nativeControlChange(channel: Int, cc: Int, value: Int)
   private external fun nativeProgramChange(channel: Int, program: Int)
@@ -30,7 +60,6 @@ class SynthEngineModule : Module() {
   private external fun nativeGetDetectedChord(): String
   private external fun nativeSetSplitPoint(note: Int)
   private external fun nativeSetBpm(bpm: Int)
-  private external fun nativeSetStyleSection(section: String)
 
   private fun getMidiManager(): MidiManager? {
     if (midiManager == null) {
@@ -110,6 +139,39 @@ class SynthEngineModule : Module() {
       nativeLoadSoundFont(assetPath)
     }
 
+    Function("setLayerMix") { layerIndex: Int, volume: Double, mute: Boolean, solo: Boolean ->
+      nativeSetLayerMix(layerIndex, volume.toFloat(), mute, solo)
+    }
+
+    Function("setLayerVoice") { layerIndex: Int, voiceName: String, presetIndex: Int, fontPath: String ->
+      nativeSetLayerVoice(layerIndex, voiceName, presetIndex, fontPath)
+    }
+
+    Function("setLayerOctave") { layerIndex: Int, octave: Int ->
+      nativeSetLayerOctave(layerIndex, octave)
+    }
+
+    Function("setGlobalTranspose") { transpose: Int ->
+      nativeSetGlobalTranspose(transpose)
+    }
+
+    Function("setLayerParam") { layerIndex: Int, paramName: String, value: Double ->
+      nativeSetLayerParam(layerIndex, paramName, value.toFloat())
+    }
+
+    Function("getChannelLevels") {
+      val raw = nativeGetChannelLevels()
+      return@Function raw.map { it.toDouble() }
+    }
+
+    Function("auditionVoice") { presetIndex: Int, fontPath: String, note: Int, velocity: Int ->
+      nativeAuditionVoice(presetIndex, fontPath, note, velocity)
+    }
+
+    Function("auditionStop") { note: Int ->
+      nativeAuditionStop(note)
+    }
+
     Function("noteOn") { note: Int, velocity: Int ->
       nativeNoteOn(note, velocity)
     }
@@ -118,8 +180,71 @@ class SynthEngineModule : Module() {
       nativeNoteOff(note)
     }
 
-    Function("setParam") { paramName: String, value: Float ->
-      nativeSetParam(paramName, value)
+    // Métodos Arranger / Style
+    Function("styleNoteOn") { channel: Int, note: Int, velocity: Int, program: Int ->
+      nativeStyleNoteOn(channel, note, velocity, program)
+    }
+
+    Function("styleNoteOff") { channel: Int, note: Int ->
+      nativeStyleNoteOff(channel, note)
+    }
+
+    Function("setStyleMasterVolume") { volume: Double ->
+      nativeSetStyleMasterVolume(volume.toFloat())
+    }
+
+    Function("styleAllNotesOff") {
+      nativeStyleAllNotesOff()
+    }
+
+    // Secuenciador Nativo C++
+    Function("clearStyleData") {
+      nativeClearStyleData()
+    }
+
+    Function("setStylePpq") { ppq: Int ->
+      nativeSetStylePpq(ppq)
+    }
+
+    Function("loadStyleSectionEvents") { sectionName: String, totalTicks: Int, eventsData: String ->
+      nativeLoadStyleSectionEvents(sectionName, totalTicks, eventsData)
+    }
+
+    Function("startStylePlayback") { bpm: Int, accompanimentOn: Boolean ->
+      nativeStartStylePlayback(bpm, accompanimentOn)
+    }
+
+    Function("stopStylePlayback") {
+      nativeStopStylePlayback()
+    }
+
+    Function("setStyleAccompaniment") { enabled: Boolean ->
+      nativeSetStyleAccompaniment(enabled)
+    }
+
+    Function("setStyleBpm") { bpm: Int ->
+      nativeSetStyleBpm(bpm)
+    }
+
+    Function("setStyleSection") { section: String ->
+      nativeSetStyleSection(section)
+    }
+
+    Function("queueNextStyleSection") { section: String ->
+      nativeQueueNextStyleSection(section)
+    }
+
+    Function("getStylePlaybackState") {
+      return@Function mapOf(
+        "isPlaying" to nativeIsStylePlaying(),
+        "currentBeat" to nativeGetCurrentBeat(),
+        "currentSection" to nativeGetCurrentSection(),
+        "queuedSection" to nativeGetQueuedSection()
+      )
+    }
+
+    Function("setParam") { paramName: String, value: Double ->
+      nativeSetParam(paramName, value.toFloat())
     }
 
     Function("getDetectedChord") {
@@ -132,10 +257,6 @@ class SynthEngineModule : Module() {
 
     Function("setBpm") { bpm: Int ->
       nativeSetBpm(bpm)
-    }
-
-    Function("setStyleSection") { section: String ->
-      nativeSetStyleSection(section)
     }
 
     Function("getMidiDiagnostics") {
@@ -174,6 +295,51 @@ class SynthEngineModule : Module() {
         return@Function true
       }
       return@Function false
+    }
+
+    Function("isBluetoothEnabled") {
+      val manager = getMidiManager()
+      return@Function manager?.isBluetoothEnabled() ?: false
+    }
+
+    Function("isBleScanning") {
+      val manager = getMidiManager()
+      return@Function manager?.isBleScanning() ?: false
+    }
+
+    Function("startBleScan") {
+      val manager = getMidiManager()
+      return@Function manager?.startBleScanExplicit() ?: false
+    }
+
+    Function("stopBleScan") {
+      val manager = getMidiManager()
+      return@Function manager?.stopBleScan() ?: true
+    }
+
+    Function("getDiscoveredBleDevices") {
+      val manager = getMidiManager()
+      return@Function manager?.getDiscoveredBleDevices() ?: emptyList<Map<String, Any>>()
+    }
+
+    AsyncFunction("connectBleDevice") { address: String ->
+      val manager = getMidiManager() ?: return@AsyncFunction false
+      var result = false
+      val latch = java.util.concurrent.CountDownLatch(1)
+      manager.connectBleDeviceByAddress(address) { success ->
+        result = success
+        latch.countDown()
+      }
+      try {
+        latch.await(5, java.util.concurrent.TimeUnit.SECONDS)
+      } catch (e: Exception) {}
+      return@AsyncFunction result
+    }
+
+    Function("disconnectMidi") {
+      val manager = getMidiManager()
+      manager?.disconnect()
+      return@Function true
     }
   }
 }

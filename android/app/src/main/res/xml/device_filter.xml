@@ -1,9 +1,24 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- M-VAVE 25 / SINCO / SMK25II -->
+    <!-- Universal USB Device filter matching all OTG MIDI keyboards & controllers -->
+    <usb-device />
+    <!-- Specific M-VAVE 25 / SINCO / SMK25II -->
     <usb-device vendor-id="17235" product-id="19277" />
-    <!-- Generic USB Audio/MIDI Class (Class 1) -->
+    <!-- Yamaha Keyboards (PSR / Tyros / Motif) -->
+    <usb-device vendor-id="1170" />
+    <!-- Korg Keyboards -->
+    <usb-device vendor-id="2436" />
+    <!-- Roland / Boss Keyboards -->
+    <usb-device vendor-id="1479" />
+    <!-- Akai Professional -->
+    <usb-device vendor-id="2536" />
+    <!-- Novation / Focusrite -->
+    <usb-device vendor-id="4661" />
+    <!-- Alesis / M-Audio -->
+    <usb-device vendor-id="7084" />
+    <!-- Generic USB Audio/MIDI Class 1 -->
     <usb-device class="1" />
-    <!-- Vendor Specific MIDI (Class 255) -->
+    <usb-device class="1" subclass="3" />
+    <!-- Vendor Specific MIDI Class 255 -->
     <usb-device class="255" />
 </resources>
