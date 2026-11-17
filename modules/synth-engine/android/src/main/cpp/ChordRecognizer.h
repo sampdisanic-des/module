@@ -22,6 +22,7 @@ public:
     void addNote(int midiNote);
     void removeNote(int midiNote);
     void clearNotes();
+    bool hasActiveNotes() const;
 
     ChordInfo detectChord();
     std::string getActiveNotesString() const;

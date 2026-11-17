@@ -1,4 +1,4 @@
-import SynthEngineModule, { MidiDeviceInfoTS, StylePlaybackState } from './SynthEngineModule';
+import SynthEngineModule, { MidiDeviceInfoTS, StylePlaybackState, DiscoveredBleDeviceTS } from './SynthEngineModule';
 
 export function initializeEngine(): boolean {
   try {
@@ -150,6 +150,32 @@ export function queueNativeStyleSection(section: string): void {
   SynthEngineModule.queueNextStyleSection(section);
 }
 
+export function setNativeSyncStart(armed: boolean): void {
+  try {
+    SynthEngineModule.setSyncStart(armed);
+  } catch (error) {
+    console.error('[SynthEngine TS] Error en setNativeSyncStart:', error);
+  }
+}
+
+// Pedal de sustain virtual (equivale a CC64 del teclado)
+export function setSustainPedal(on: boolean): void {
+  try {
+    SynthEngineModule.setSustainPedal(on);
+  } catch (error) {
+    console.error('[SynthEngine TS] Error en setSustainPedal:', error);
+  }
+}
+
+// Pánico: apaga todas las notas (faders, preescucha y acompañamiento)
+export function panicAllNotesOff(): void {
+  try {
+    SynthEngineModule.allNotesOff();
+  } catch (error) {
+    console.error('[SynthEngine TS] Error en panicAllNotesOff:', error);
+  }
+}
+
 export function fetchStylePlaybackState(): StylePlaybackState {
   try {
     return SynthEngineModule.getStylePlaybackState();
@@ -158,7 +184,9 @@ export function fetchStylePlaybackState(): StylePlaybackState {
       isPlaying: false,
       currentBeat: 1,
       currentSection: 'MAIN_A',
-      queuedSection: ''
+      queuedSection: '',
+      isSyncStart: false,
+      chord: '---'
     };
   }
 }
@@ -202,6 +230,14 @@ export function attachMidiDevice(deviceId: string): boolean {
 export function checkBluetoothEnabled(): boolean {
   try {
     return SynthEngineModule.isBluetoothEnabled();
+  } catch {
+    return false;
+  }
+}
+
+export function requestBluetoothEnable(): boolean {
+  try {
+    return SynthEngineModule.requestEnableBluetooth();
   } catch {
     return false;
   }
@@ -277,6 +313,7 @@ export function promptUsbPermission(): boolean {
   }
 }
 
-export { addMidiLogListener, addMidiNoteListener, StylePlaybackState, DiscoveredBleDeviceTS } from './SynthEngineModule';
+export { addMidiLogListener, addMidiNoteListener } from './SynthEngineModule';
+export type { StylePlaybackState, DiscoveredBleDeviceTS, MidiDeviceInfoTS } from './SynthEngineModule';
 
 export default SynthEngineModule;

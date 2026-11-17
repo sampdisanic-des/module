@@ -343,6 +343,12 @@ struct tsf
 	float outSampleRate;
 	float globalGainDB;
 	int* refCount;
+	// SynthConnect: per-voice amp envelope override (0 = use SoundFont values)
+	int envOverrideEnabled;
+	float envOverrideAttack;     // minimum attack time in seconds
+	float envOverrideDecayScale; // multiplier for SF2 decay time
+	float envOverrideSustainScale; // multiplier for SF2 sustain gain (0..1)
+	float envOverrideRelease;    // release time in seconds (absolute)
 };
 
 #ifndef TSF_NO_STDIO
@@ -1639,7 +1645,16 @@ TSFDEF int tsf_note_on(tsf* f, int preset_index, int key, float vel)
 		voice->loopEnd = (doLoop ? region->loop_end : 0);
 
 		// Setup envelopes.
-		tsf_voice_envelope_setup(&voice->ampenv, &region->ampenv, key, midiVelocity, TSF_TRUE, f->outSampleRate);
+		if (f->envOverrideEnabled)
+		{
+			struct tsf_envelope ampOverride = region->ampenv;
+			if (ampOverride.attack < f->envOverrideAttack) ampOverride.attack = f->envOverrideAttack;
+			if (!ampOverride.keynumToDecay) ampOverride.decay *= f->envOverrideDecayScale;
+			ampOverride.sustain *= f->envOverrideSustainScale;
+			ampOverride.release = f->envOverrideRelease;
+			tsf_voice_envelope_setup(&voice->ampenv, &ampOverride, key, midiVelocity, TSF_TRUE, f->outSampleRate);
+		}
+		else tsf_voice_envelope_setup(&voice->ampenv, &region->ampenv, key, midiVelocity, TSF_TRUE, f->outSampleRate);
 		tsf_voice_envelope_setup(&voice->modenv, &region->modenv, key, midiVelocity, TSF_FALSE, f->outSampleRate);
 
 		// Setup lowpass filter.

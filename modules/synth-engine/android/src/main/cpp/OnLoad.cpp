@@ -227,4 +227,24 @@ Java_expo_modules_synthengine_SynthEngineModule_nativeSetBpm(JNIEnv* env, jobjec
     SynthEngine::getInstance().setBpm(bpm);
 }
 
+JNIEXPORT void JNICALL
+Java_expo_modules_synthengine_SynthEngineModule_nativeSetSyncStart(JNIEnv* env, jobject thiz, jboolean armed) {
+    SynthEngine::getInstance().setSyncStart(armed);
+}
+
+JNIEXPORT jboolean JNICALL
+Java_expo_modules_synthengine_SynthEngineModule_nativeIsSyncStartArmed(JNIEnv* env, jobject thiz) {
+    return SynthEngine::getInstance().isSyncStartArmed();
+}
+
+JNIEXPORT void JNICALL
+Java_expo_modules_synthengine_SynthEngineModule_nativeAllNotesOff(JNIEnv* env, jobject thiz) {
+    SynthEngine::getInstance().allNotesOff();
+}
+
+JNIEXPORT jint JNICALL
+Java_expo_modules_synthengine_SynthEngineModule_nativeGetSampleRate(JNIEnv* env, jobject thiz) {
+    return SynthEngine::getInstance().getSampleRate();
+}
+
 }

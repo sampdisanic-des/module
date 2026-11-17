@@ -5,6 +5,7 @@ import {
   attachMidiDevice,
   checkBluetoothEnabled,
   checkBleScanning,
+  requestBluetoothEnable,
   triggerBleScan,
   cancelBleScan,
   fetchDiscoveredBleDevices,
@@ -21,6 +22,8 @@ import {
 export interface UseMidiDevicesReturn {
   devices: MidiDeviceInfoTS[];
   usbDevices: MidiDeviceInfoTS[];
+  connectedUsbDevice: MidiDeviceInfoTS | undefined;
+  connectedBleDevice: MidiDeviceInfoTS | undefined;
   connectedDeviceId: string | null;
   connectedDeviceName: string;
   isDirectUsbActive: boolean;
@@ -37,144 +40,160 @@ export interface UseMidiDevicesReturn {
   disconnect: () => boolean;
 }
 
+const POLL_INTERVAL_MS = 1500;
+const BLE_POLL_INTERVAL_MS = 600;
+
+// Evita re-renderizar toda la app cuando el listado no cambió
+function sameJson<T>(a: T, b: T): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
 export const useMidiDevices = (): UseMidiDevicesReturn => {
   const [devices, setDevices] = useState<MidiDeviceInfoTS[]>([]);
   const [connectedDeviceId, setConnectedDeviceId] = useState<string | null>(null);
-  const [connectedDeviceName, setConnectedDeviceName] = useState<string>('Ninguno');
-  const [isDirectUsbActive, setIsDirectUsbActive] = useState<boolean>(false);
   const [isBluetoothEnabled, setIsBluetoothEnabled] = useState<boolean>(false);
   const [isScanningBle, setIsScanningBle] = useState<boolean>(false);
   const [discoveredBleDevices, setDiscoveredBleDevices] = useState<DiscoveredBleDeviceTS[]>([]);
   const [diagnostics, setDiagnostics] = useState<MidiDiagnosticsData | null>(null);
 
+  const devicesRef = useRef<MidiDeviceInfoTS[]>([]);
+  const bleListRef = useRef<DiscoveredBleDeviceTS[]>([]);
   const isScanningRef = useRef(false);
 
   const requestBluetoothPermissions = useCallback(async (): Promise<boolean> => {
     if (Platform.OS !== 'android') return true;
-
     try {
-      const permissionsToRequest: any[] = [];
-
-      if (Platform.Version >= 31) {
-        permissionsToRequest.push(
-          PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN,
-          PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT
-        );
-      }
-      permissionsToRequest.push(PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION);
-
-      const grantedResults = await PermissionsAndroid.requestMultiple(permissionsToRequest);
-
-      const allGranted = Object.values(grantedResults).every(
-        (val) => val === PermissionsAndroid.RESULTS.GRANTED
-      );
-
-      return allGranted;
+      // Android 12+: "Dispositivos cercanos" es suficiente (sin ubicación)
+      const required =
+        Platform.Version >= 31
+          ? [PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN, PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT]
+          : [PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION];
+      const results = await PermissionsAndroid.requestMultiple(required as any);
+      return required.every((p) => results[p] === PermissionsAndroid.RESULTS.GRANTED);
     } catch (err) {
       console.warn('[useMidiDevices] Error al solicitar permisos:', err);
       return false;
     }
   }, []);
 
-  const scan = useCallback(() => {
-    const list = listMidiDevices();
-    setDevices(list);
-
-    const isBt = checkBluetoothEnabled();
-    setIsBluetoothEnabled(isBt);
-
-    const isScanning = checkBleScanning();
-    setIsScanningBle(isScanning);
-    isScanningRef.current = isScanning;
-
-    if (isScanning) {
-      const bleList = fetchDiscoveredBleDevices();
+  const refreshBleList = useCallback(() => {
+    const bleList = fetchDiscoveredBleDevices();
+    if (!sameJson(bleList, bleListRef.current)) {
+      bleListRef.current = bleList;
       setDiscoveredBleDevices(bleList);
-    }
-
-    const diag = fetchMidiDiagnostics();
-    setDiagnostics(diag);
-    if (diag) {
-      setConnectedDeviceName(diag.connectedDeviceName || 'Ninguno');
-      setIsDirectUsbActive(diag.isDirectUsbActive || false);
     }
   }, []);
 
-  const connect = useCallback((deviceId: string) => {
-    const success = attachMidiDevice(deviceId);
-    if (success) {
-      setConnectedDeviceId(deviceId);
-      scan();
+  const scan = useCallback(() => {
+    const list = listMidiDevices();
+    if (!sameJson(list, devicesRef.current)) {
+      devicesRef.current = list;
+      setDevices(list);
     }
-    return success;
-  }, [scan]);
+    setIsBluetoothEnabled(checkBluetoothEnabled());
+    const scanning = checkBleScanning();
+    isScanningRef.current = scanning;
+    setIsScanningBle(scanning);
+    if (scanning) refreshBleList();
+  }, [refreshBleList]);
+
+  const refreshDiagnostics = useCallback(() => {
+    setDiagnostics(fetchMidiDiagnostics());
+  }, []);
+
+  const connect = useCallback(
+    (deviceId: string) => {
+      const success = attachMidiDevice(deviceId);
+      if (success) setConnectedDeviceId(deviceId);
+      // La apertura es asíncrona en Android: refrescar en breve
+      setTimeout(scan, 800);
+      return success;
+    },
+    [scan]
+  );
 
   const startBleScan = useCallback(async (): Promise<boolean> => {
-    const hasPermissions = await requestBluetoothPermissions();
-    if (!hasPermissions) {
-      console.warn('[useMidiDevices] Permisos Bluetooth / Ubicación denegados');
-      return false;
+    // Bluetooth apagado: pedir al sistema que lo encienda y esperar hasta 20 s
+    if (!checkBluetoothEnabled()) {
+      if (!requestBluetoothEnable()) return false;
+      const deadline = Date.now() + 20000;
+      while (!checkBluetoothEnabled() && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 500));
+      }
+      setIsBluetoothEnabled(checkBluetoothEnabled());
+      if (!checkBluetoothEnabled()) return false;
+      await new Promise((r) => setTimeout(r, 800)); // el adaptador tarda en quedar listo
     }
-
     const started = triggerBleScan();
     if (started) {
-      setIsScanningBle(true);
       isScanningRef.current = true;
+      setIsScanningBle(true);
+      bleListRef.current = [];
       setDiscoveredBleDevices([]);
     }
     return started;
-  }, [requestBluetoothPermissions]);
+  }, []);
 
   const stopBleScan = useCallback(() => {
     cancelBleScan();
-    setIsScanningBle(false);
     isScanningRef.current = false;
+    setIsScanningBle(false);
   }, []);
 
-  const connectBle = useCallback(async (address: string): Promise<boolean> => {
-    stopBleScan();
-    const success = await attachBleDevice(address);
-    if (success) {
+  const connectBle = useCallback(
+    async (address: string): Promise<boolean> => {
+      stopBleScan();
+      const success = await attachBleDevice(address);
       scan();
-    }
-    return success;
-  }, [stopBleScan, scan]);
+      refreshBleList();
+      refreshDiagnostics();
+      return success;
+    },
+    [stopBleScan, scan, refreshBleList, refreshDiagnostics]
+  );
 
   const disconnect = useCallback(() => {
     const result = detachMidi();
     setConnectedDeviceId(null);
-    setConnectedDeviceName('Ninguno');
     scan();
+    refreshDiagnostics();
     return result;
-  }, [scan]);
+  }, [scan, refreshDiagnostics]);
 
-  // Polling regular de dispositivos y actualización rápida mientras se escanea BLE
   useEffect(() => {
     scan();
-    const interval = setInterval(() => {
-      scan();
-      if (isScanningRef.current) {
-        const bleList = fetchDiscoveredBleDevices();
-        setDiscoveredBleDevices(bleList);
-      }
-    }, 1200);
-
-    return () => clearInterval(interval);
-  }, [scan]);
+    refreshDiagnostics();
+    const interval = setInterval(scan, POLL_INTERVAL_MS);
+    const bleInterval = setInterval(() => {
+      if (isScanningRef.current) refreshBleList();
+    }, BLE_POLL_INTERVAL_MS);
+    return () => {
+      clearInterval(interval);
+      clearInterval(bleInterval);
+    };
+  }, [scan, refreshBleList, refreshDiagnostics]);
 
   const usbDevices = devices.filter((d) => d.type === 'USB');
+  const connectedUsbDevice = usbDevices.find((d) => d.connected);
+  const connectedBleDevice = devices.find((d) => d.type === 'BLUETOOTH' && d.connected);
+  const connectedNames = devices.filter((d) => d.connected).map((d) => d.name);
 
   return {
     devices,
     usbDevices,
+    connectedUsbDevice,
+    connectedBleDevice,
     connectedDeviceId,
-    connectedDeviceName,
-    isDirectUsbActive,
+    connectedDeviceName: connectedNames.length > 0 ? connectedNames.join(', ') : 'Ninguno',
+    isDirectUsbActive: diagnostics?.isDirectUsbActive ?? false,
     isBluetoothEnabled,
     isScanningBle,
     discoveredBleDevices,
     diagnostics,
-    scan,
+    scan: () => {
+      scan();
+      refreshDiagnostics();
+    },
     connect,
     requestBluetoothPermissions,
     startBleScan,

@@ -136,7 +136,7 @@ Dado que las carpetas de compilación pesadas (`node_modules/`, `android/build/`
     - Gráfica interactiva SVG (220x70) con 4 nodos coloreados (`A`, `D`, `S`, `R`).
     - Perilla maestra ADSR (Izquierda) para el parámetro seleccionado del fader activo.
     - Fader vertical `CUTOFF` (Derecha) para corte de frecuencia del fader activo.
-    - 4 Botones ADSR (`ATTACK`, `DELAY`, `SUSTAIN`, `RELEASE`) con valor numérico en tiempo real.
+    - 4 Botones ADSR (`ATTACK`, `DECAY`, `SUSTAIN`, `RELEASE`) con valor numérico en tiempo real.
   - **Tarjeta Independiente `TEMPO CONTROL`:** Botones `-` y `+` con 0ms de latencia.
   - **Fader Horizontal `RESONANCE`:** Control de resonancia del filtro del fader activo.
   - **Tarjeta `MEMORY BANKS`:** 8 Bancos de Memoria (`BANK 1` a `BANK 8`) con pulsación corta para cargar y pulsación de 1s para guardar toda la configuración.
@@ -146,15 +146,21 @@ Dado que las carpetas de compilación pesadas (`node_modules/`, `android/build/`
 - **`expo-battery`**: Módulo nativo para lectura real de la batería del dispositivo.
 - **`react-native-svg`**: Renderizado vectorial de curvas ADSR e iconografía SVG del sistema.
 - **`synth-engine` (C++ NDK / AAudio / TSF / Dual MIDI Driver)**:
-  - **Audio API Nativa**: `AAudio` (Android API 26+) para streaming estéreo PCM float a 44100 Hz con latencia ultrabaja (<5ms).
-  - **Instancias TSF Aisladas**: Copias independientes de TinySoundFont (`tsf_copy`) por cada fader (`mLayers[0..3]`), canal de acompañamiento de ritmo (`mStyleTsf`) y preescucha (`mAuditionTsf`).
-  - **DSP de Alta Fidelidad**: Headroom a -4.5dB en instancias TSF y saturación analógica suave (`tanhf`) para evitar distorsión o clipping.
-  - **Mapeo de Notas Activas y Cero Notas Pegadas**: Estructura `activePlayingNotes` en cada capa para rastrear la transposición exacta de cada nota física y garantizar que `noteOff` siempre la apague limpiamente.
-  - **Soporte CC 64 (Damper/Sustain Pedal)**: Integración en `controlChange` que activa `tsf_channel_set_sustain` en todas las capas activas.
-  - **Parámetros por Capa (Stem)**: Soporte nativo para octava, cutoff, resonancia y envolvente ADSR (`AdsrEnvelope.h` / `BiquadFilter.h`) independientes por fader.
-  - **Transposición Global**: Desplazamiento por semitonos aplicado a todas las capas en C++.
-  - **Controlador Dual MIDI (USB Host OTG + Bluetooth LE MIDI)**:
-    - Enumeración directa de `UsbManager` con hilos Bulk IN en Kotlin para baja latencia (0ms).
-    - Escáner y conexión BLE MIDI para teclados inalámbricos M-VAVE / BLE MIDI vía UUID `03B80E5A-EDE8-4B33-A751-6CE34EC4C700`.
-    - Soporte completo para **MIDI Running Status** en `MidiReceiverImpl` para evitar descarte de eventos `Note Off` en ráfagas rápidas.
+  - **Audio API Nativa**: `AAudio` (API 26+) a la frecuencia nativa del dispositivo (sin remuestreo), buffer de 2 bursts. `AudioStream` reabre el stream automáticamente si cambia la salida (audífonos, Bluetooth, USB) mediante el error callback.
+  - **Instancias TSF**: copia (`tsf_copy`) por fader (`mLayers[0..3]`), acompañamiento (`mStyleTsf`) y preescucha (`mAuditionTsf`). Cada capa toca en el canal 0 de su instancia (API de canales de TSF), por eso sustain, pitch bend y vibrato funcionan por voz. Los SF2 personalizados se cachean (`mFontCache`) y se cargan del disco fuera del lock para no cortar el audio.
+  - **Presets**: el valor `sf2Preset` de la librería es un número de programa GM; se resuelve con `tsf_get_presetindex` (el índice interno del SF2 no coincide con el programa).
+  - **Envolvente por voz**: `tsf.h` tiene un ajuste del amp envelope por instancia (`envOverride*`) aplicado en cada `tsf_note_on`. Mapeo (escala UI 0..100): attack mínimo 0..3 s, decay x0.25..x4 sobre el SF2 (45 = neutro), sustain x0..x1, release 0.02..6 s. `src/utils/adsrFormat.ts` muestra los mismos valores en la UI.
+  - **Notas sin pegarse**: `LayerStem::heldNotes` guarda la nota transpuesta que sonó en cada capa; `noteOff` apaga exactamente esa nota aunque cambien octava, transposición o mute. Si un teclado se desconecta, `allNotesOff()` suelta notas y pedal.
+  - **Controladores**: CC1 (vibrato), CC7 (volumen), CC11 (expresión), CC64 (sustain), CC74 (cutoff master), CC120/123 (all notes off), pitch bend en todas las capas. Program Change del teclado se ignora (la voz la decide la app).
+  - **Hilos**: un `recursive_mutex` protege el estado; el callback de audio no reserva memoria (buffers preasignados, voces preasignadas por instancia).
+  - **Secuenciador de estilos**: avanza en sub-bloques de 64 frames. Cambios de sección (MAIN/INTRO/ENDING) en la siguiente barra según una rejilla global de compás (`mGlobalTick`); los FILL entran de inmediato y, si son más cortos que lo que resta del compás, se alinean para terminar en la barra. Sync Start nativo (`setSyncStart`): arranca en el mismo Note On. Con ACMP activo la mano izquierda (bajo el split point) solo controla acordes.
+  - **Armonización**: patrones fuente en C (CMaj7, como los .STY Yamaha). Tónica al registro más cercano, mapeo de 3ra/5ta/7ma por tipo de acorde. Memoria de acorde (solo cambia en Note On) y re-armonización de las notas sostenidas al cambiar de acorde. `ChordRecognizer` detecta Maj, Min, 7, Maj7, m7, m7b5, dim, aug, sus2, sus4 e inversiones (`C/E`).
+  - **MIDI (`MidiManager.kt`)**: varios dispositivos a la vez. USB class-compliant y BLE por el servicio MIDI de Android; driver USB directo solo para teclados que el sistema no expone (reclama únicamente la interfaz MIDI Streaming). Parser MIDI con running status que tolera mensajes partidos (`MidiStreamParser`). BLE: el `MidiDevice` de `openBluetoothDevice` se conserva abierto (dueño de la conexión GATT) y se reconecta solo al último teclado usado.
   - **Alineación 16 KB**: Banderas `-Wl,-z,max-page-size=16384` en CMake para compatibilidad estricta con Android 15+.
+
+## Pruebas
+
+- `npm test`: parser de estilos .STY (`tests/styParser.test.js`) y chequeo de tipos TypeScript.
+- Pruebas del parser MIDI (JVM): `cd android; .\gradlew.bat :synth-engine:testReleaseUnitTest`.
+- Pruebas nativas del motor (en el teléfono por adb): `npm run test:native` (compila `modules/synth-engine/android/src/test/cpp/engine_tests.cpp` con el NDK, sube el binario y `default.sf2` a `/data/local/tmp` y lo ejecuta).
+- Si `JAVA_HOME` apunta a una ruta inexistente, Gradle puede usar el JDK 17 que descargó en `%USERPROFILE%\.gradle\jdks\`.

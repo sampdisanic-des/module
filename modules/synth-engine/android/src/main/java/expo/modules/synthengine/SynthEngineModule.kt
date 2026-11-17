@@ -52,6 +52,10 @@ class SynthEngineModule : Module() {
   private external fun nativeGetCurrentBeat(): Int
   private external fun nativeGetCurrentSection(): String
   private external fun nativeGetQueuedSection(): String
+  private external fun nativeSetSyncStart(armed: Boolean)
+  private external fun nativeIsSyncStartArmed(): Boolean
+  private external fun nativeAllNotesOff()
+  private external fun nativeGetSampleRate(): Int
 
   private external fun nativeSetParam(paramName: String, value: Float)
   private external fun nativeControlChange(channel: Int, cc: Int, value: Int)
@@ -106,6 +110,10 @@ class SynthEngineModule : Module() {
 
           override fun onPitchBend(channel: Int, pitch: Int) {
             nativePitchBend(channel, pitch)
+          }
+
+          override fun onDeviceLost() {
+            nativeAllNotesOff()
           }
         }
         midiManager = manager
@@ -239,8 +247,27 @@ class SynthEngineModule : Module() {
         "isPlaying" to nativeIsStylePlaying(),
         "currentBeat" to nativeGetCurrentBeat(),
         "currentSection" to nativeGetCurrentSection(),
-        "queuedSection" to nativeGetQueuedSection()
+        "queuedSection" to nativeGetQueuedSection(),
+        "isSyncStart" to nativeIsSyncStartArmed(),
+        "chord" to nativeGetDetectedChord()
       )
+    }
+
+    Function("setSyncStart") { armed: Boolean ->
+      nativeSetSyncStart(armed)
+    }
+
+    // Pedal de sustain desde la app (para teclados que no envían CC64)
+    Function("setSustainPedal") { on: Boolean ->
+      nativeControlChange(0, 64, if (on) 127 else 0)
+    }
+
+    Function("allNotesOff") {
+      nativeAllNotesOff()
+    }
+
+    Function("getSampleRate") {
+      nativeGetSampleRate()
     }
 
     Function("setParam") { paramName: String, value: Double ->
@@ -277,7 +304,8 @@ class SynthEngineModule : Module() {
         mapOf(
           "id" to it.id,
           "name" to it.name,
-          "type" to it.type
+          "type" to it.type,
+          "connected" to it.connected
         )
       }
     }
@@ -300,6 +328,19 @@ class SynthEngineModule : Module() {
     Function("isBluetoothEnabled") {
       val manager = getMidiManager()
       return@Function manager?.isBluetoothEnabled() ?: false
+    }
+
+    // Abre el diálogo del sistema para encender Bluetooth
+    Function("requestEnableBluetooth") {
+      val activity = appContext.currentActivity ?: return@Function false
+      try {
+        val intent = android.content.Intent(android.bluetooth.BluetoothAdapter.ACTION_REQUEST_ENABLE)
+        activity.startActivity(intent)
+        return@Function true
+      } catch (e: Exception) {
+        android.util.Log.w("SynthEngineModule", "No se pudo solicitar encender Bluetooth", e)
+        return@Function false
+      }
     }
 
     Function("isBleScanning") {

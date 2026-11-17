@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, useMemo } from 'react';
 import {
   StyleSheet,
   Text,
@@ -25,559 +25,15 @@ import { useArranger } from './src/hooks/useArranger';
 import SoundLibraryService, { CustomVoicePreset } from './src/services/soundLibraryService';
 import BankMemoryService, { MemoryBanksCatalog, MemoryBankPreset } from './src/services/bankMemoryService';
 import StyleLibraryService from './src/services/styleLibraryService';
-import { fetchChannelLevels } from './modules/synth-engine/src';
+import { setSustainPedal } from './modules/synth-engine/src';
+import { formatAttack, formatDecay, formatSustain, formatRelease } from './src/utils/adsrFormat';
+import { SearchIcon, BluetoothIcon, UsbCableIcon, SignalBarsIcon, RefreshIcon, BackArrowIcon, PlusIcon, EditIcon, TrashIcon, CloseIcon, AssignIcon } from './src/components/Icons';
+import { HorizontalFader, MiniVerticalFader, ChannelVuMeter, ConsoleFader, ConsoleKnob } from './src/components/ConsoleControls';
+import { VOICE_LIBRARY, VoicePreset, matchStyleCategory } from './src/data/voiceLibrary';
+export type { VoicePreset } from './src/data/voiceLibrary';
 
 export const STYLE_CATEGORIES = ['ALL', 'LATIN', 'POP', 'ROCK', 'BALLAD', 'CUMBIA', 'DANCE', 'CUSTOM'];
 export const VOICE_CATEGORIES = ['ALL', 'PIANO', 'PADS', 'STRINGS', 'LEADS', 'BRASS', 'ORGAN', 'BASS', 'CUSTOM'];
-
-// ================= ICONOS VECTORIALES SVG =================
-const SearchIcon = ({ size = 13, color = '#7187A1' }: { size?: number; color?: string }) => (
-  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
-    <Circle cx="11" cy="11" r="7" stroke={color} strokeWidth="2.5" />
-    <Line x1="16.5" y1="16.5" x2="21.5" y2="21.5" stroke={color} strokeWidth="2.5" strokeLinecap="round" />
-  </Svg>
-);
-
-const BluetoothIcon = ({ size = 13, color = '#00E5FF' }: { size?: number; color?: string }) => (
-  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
-    <Path
-      d="M7 7L17 17L12 22V2L17 7L7 17"
-      stroke={color}
-      strokeWidth="2.4"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    />
-  </Svg>
-);
-
-const UsbCableIcon = ({ size = 13, color = '#7187A1' }: { size?: number; color?: string }) => (
-  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
-    <Path
-      d="M12 2V14M8 6H16V10C16 12.2091 14.2091 14 12 14C9.79086 14 8 12.2091 8 10V6ZM10 2V6M14 2V6M12 14V22"
-      stroke={color}
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    />
-    <Circle cx="12" cy="20" r="1.5" fill={color} />
-  </Svg>
-);
-
-const SignalBarsIcon = ({ rssi = -60, size = 12 }: { rssi?: number; size?: number }) => {
-  // rssi: > -60 (4 bars), > -75 (3 bars), > -90 (2 bars), <= -90 (1 bar)
-  const bars = rssi > -60 ? 4 : rssi > -75 ? 3 : rssi > -90 ? 2 : 1;
-  return (
-    <Svg width={size} height={size} viewBox="0 0 16 16" fill="none">
-      <Line x1="2" y1="13" x2="2" y2="10" stroke={bars >= 1 ? '#00E5FF' : '#23384D'} strokeWidth="2" strokeLinecap="round" />
-      <Line x1="6" y1="13" x2="6" y2="7.5" stroke={bars >= 2 ? '#00E5FF' : '#23384D'} strokeWidth="2" strokeLinecap="round" />
-      <Line x1="10" y1="13" x2="10" y2="5" stroke={bars >= 3 ? '#00E5FF' : '#23384D'} strokeWidth="2" strokeLinecap="round" />
-      <Line x1="14" y1="13" x2="14" y2="2" stroke={bars >= 4 ? '#00E5FF' : '#23384D'} strokeWidth="2" strokeLinecap="round" />
-    </Svg>
-  );
-};
-
-const RefreshIcon = ({ size = 12, color = '#00E5FF' }: { size?: number; color?: string }) => (
-  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
-    <Path
-      d="M21 12A9 9 0 006 5.3L3 8M3 3V8H8M3 12A9 9 0 0018 18.7L21 16M21 21V16H16"
-      stroke={color}
-      strokeWidth="2.4"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    />
-  </Svg>
-);
-
-const BackArrowIcon = ({ size = 16, color = '#00E5FF' }: { size?: number; color?: string }) => (
-  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
-    <Path d="M19 12H5M5 12L12 19M5 12L12 5" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
-  </Svg>
-);
-
-const PlusIcon = ({ size = 15, color = '#000000' }: { size?: number; color?: string }) => (
-  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
-    <Path d="M12 5V19M5 12H19" stroke={color} strokeWidth="2.8" strokeLinecap="round" />
-  </Svg>
-);
-
-const EditIcon = ({ size = 13, color = '#8A9EB8' }: { size?: number; color?: string }) => (
-  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
-    <Path d="M11 4H4C3.44772 4 3 4.44772 3 5V20C3 20.5523 3.44772 21 4 21H19C19.5523 21 20 20.5523 20 20V13" stroke={color} strokeWidth="2" strokeLinecap="round" />
-    <Path d="M18.5 2.5C19.3284 1.67157 20.6716 1.67157 21.5 2.5C22.3284 3.32843 22.3284 4.67157 21.5 5.5L12 15L8 16L9 12L18.5 2.5Z" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-  </Svg>
-);
-
-const TrashIcon = ({ size = 13, color = '#FF5252' }: { size?: number; color?: string }) => (
-  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
-    <Path d="M3 6H21M19 6V20C19 20.5523 18.5523 21 18 21H6C5.44772 21 5 20.5523 5 20V6M8 6V4C8 3.44772 8.44772 3 9 3H15C15.5523 3 16 3.44772 16 4V6M10 11V17M14 11V17" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-  </Svg>
-);
-
-const CloseIcon = ({ size = 10, color = '#8A9EB8' }: { size?: number; color?: string }) => (
-  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
-    <Path d="M18 6L6 18M6 6L18 18" stroke={color} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
-  </Svg>
-);
-
-const AssignIcon = ({ size = 14, color = '#00E5FF' }: { size?: number; color?: string }) => (
-  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
-    <Path d="M20 6L9 17L4 12" stroke={color} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
-  </Svg>
-);
-
-const matchStyleCategory = (styleCat?: string, styleName?: string, selectedCat?: string): boolean => {
-  if (!selectedCat || selectedCat === 'ALL') return true;
-  const sel = selectedCat.trim().toUpperCase();
-  const cat = (styleCat || '').trim().toUpperCase();
-  const name = (styleName || '').trim().toUpperCase();
-
-  if (cat === sel) return true;
-  if (sel === 'CUSTOM') return cat === 'CUSTOM' || name.includes('CUSTOM');
-  if (sel === 'CUMBIA') return cat === 'CUMBIA' || cat === 'LATIN' || name.includes('CUMBIA');
-  if (sel === 'LATIN') return cat === 'LATIN' || cat === 'CUMBIA' || name.includes('SALSA') || name.includes('BACHATA') || name.includes('CUMBIA') || name.includes('MERENGUE') || name.includes('REGGAETON') || name.includes('BOLERO') || name.includes('LATIN');
-  if (sel === 'POP') return cat === 'POP' || name.includes('POP') || name.includes('GROOVE') || name.includes('8-BEAT') || name.includes('16-BEAT') || name.includes('BEAT');
-  if (sel === 'ROCK') return cat === 'ROCK' || name.includes('ROCK') || name.includes('METAL') || name.includes('PUNK');
-  if (sel === 'BALLAD') return cat === 'BALLAD' || name.includes('BALLAD') || name.includes('SLOW') || name.includes('LOVE');
-  if (sel === 'DANCE') return cat === 'DANCE' || name.includes('DANCE') || name.includes('DISCO') || name.includes('EDM') || name.includes('HOUSE') || name.includes('TECHNO');
-
-  return cat.includes(sel) || name.includes(sel);
-};
-
-export interface VoicePreset {
-  id: string;
-  name: string;
-  category: 'PIANO' | 'PADS' | 'STRINGS' | 'LEADS' | 'BRASS' | 'ORGAN' | 'BASS';
-  sf2Path: string;
-  sf2Preset: number;
-  isCustom?: boolean;
-}
-
-const VOICE_LIBRARY: VoicePreset[] = [
-  { id: 'v1', name: 'Yamaha CFX Grand', category: 'PIANO', sf2Path: 'soundfonts/yamaha_cfx_grand.sf2', sf2Preset: 0 },
-  { id: 'v2', name: 'DX7 E-Piano Vintage', category: 'PIANO', sf2Path: 'soundfonts/dx7_epiano.sf2', sf2Preset: 4 },
-  { id: 'v3', name: 'Suitcase Mark II Rhodes', category: 'PIANO', sf2Path: 'soundfonts/rhodes_mark2.sf2', sf2Preset: 5 },
-  { id: 'v4', name: 'Ambient Pad Warm', category: 'PADS', sf2Path: 'soundfonts/ambient_pad.sf2', sf2Preset: 89 },
-  { id: 'v5', name: 'Ethereal Space Choir', category: 'PADS', sf2Path: 'soundfonts/space_choir.sf2', sf2Preset: 91 },
-  { id: 'v6', name: 'Syn Strings Symphony', category: 'STRINGS', sf2Path: 'soundfonts/strings_symphony.sf2', sf2Preset: 48 },
-  { id: 'v7', name: 'Chamber Solo Violin', category: 'STRINGS', sf2Path: 'soundfonts/solo_violin.sf2', sf2Preset: 40 },
-  { id: 'v8', name: 'Synth Lead Moog Saw', category: 'LEADS', sf2Path: 'soundfonts/moog_saw.sf2', sf2Preset: 81 },
-  { id: 'v9', name: 'Square Wave Retro Lead', category: 'LEADS', sf2Path: 'soundfonts/square_retro.sf2', sf2Preset: 80 },
-  { id: 'v10', name: 'Pop Brass Horn Section', category: 'BRASS', sf2Path: 'soundfonts/pop_brass.sf2', sf2Preset: 61 },
-  { id: 'v11', name: 'French Horn Ensemble', category: 'BRASS', sf2Path: 'soundfonts/french_horns.sf2', sf2Preset: 60 },
-  { id: 'v12', name: 'B3 Drawbar Hammond Organ', category: 'ORGAN', sf2Path: 'soundfonts/b3_organ.sf2', sf2Preset: 16 },
-  { id: 'v13', name: 'Pipe Cathedral Organ', category: 'ORGAN', sf2Path: 'soundfonts/pipe_organ.sf2', sf2Preset: 19 },
-  { id: 'v14', name: 'Fender Jazz Bass', category: 'BASS', sf2Path: 'soundfonts/jazz_bass.sf2', sf2Preset: 33 },
-  { id: 'v15', name: 'Sub Synth Bass 808', category: 'BASS', sf2Path: 'soundfonts/sub_bass_808.sf2', sf2Preset: 38 },
-];
-
-// ===================================================
-// FADER HORIZONTAL PROFESIONAL 3D (HARDWARE CONSOLE)
-// ===================================================
-interface HorizontalFaderProps {
-  label: string;
-  value: number; // 0..100
-  onChange: (val: number) => void;
-  color?: string;
-  icon?: string;
-}
-
-const HorizontalFader: React.FC<HorizontalFaderProps> = ({
-  label,
-  value,
-  onChange,
-  color = '#00E5FF',
-  icon,
-}) => {
-  const valueRef = useRef(value);
-  valueRef.current = value;
-  const onChangeRef = useRef(onChange);
-  onChangeRef.current = onChange;
-
-  const trackWidth = useRef(140);
-  const startVal = useRef(value);
-
-  const panResponder = useRef(
-    PanResponder.create({
-      onStartShouldSetPanResponder: () => true,
-      onStartShouldSetPanResponderCapture: () => true,
-      onMoveShouldSetPanResponder: () => true,
-      onMoveShouldSetPanResponderCapture: () => true,
-      onPanResponderGrant: () => {
-        startVal.current = valueRef.current;
-      },
-      onPanResponderMove: (_: GestureResponderEvent, gestureState: PanResponderGestureState) => {
-        const deltaPercent = (gestureState.dx / trackWidth.current) * 100;
-        const newVal = Math.min(Math.max(startVal.current + deltaPercent, 0), 100);
-        onChangeRef.current(Math.round(newVal));
-      },
-      onPanResponderTerminationRequest: () => false,
-      onPanResponderRelease: () => {},
-    })
-  ).current;
-
-  const handleTrackLayout = (e: LayoutChangeEvent) => {
-    trackWidth.current = e.nativeEvent.layout.width || 140;
-  };
-
-  return (
-    <View style={styles.hFaderWrapper}>
-      <View style={styles.hFaderHeaderRow}>
-        <Text style={styles.hFaderLabel}>{label}</Text>
-        <Text style={[styles.hFaderValText, { color }]}>{value}%</Text>
-      </View>
-
-      <View
-        style={styles.hFaderTrackRowContainer}
-        onLayout={handleTrackLayout}
-        {...panResponder.panHandlers}
-      >
-        {icon && <Text style={[styles.hFaderIconText, { color }]}>{icon}</Text>}
-        <View style={styles.hFaderTrackSlot}>
-          <View style={styles.hFaderGrooveLine} />
-          <View style={[styles.hFaderFillBar, { width: `${value}%`, backgroundColor: color }]} />
-          {/* Cap de Mezcladora Hardware 3D */}
-          <View
-            style={[
-              styles.hFaderMasterCap3D,
-              { left: `${Math.min(Math.max(value, 0), 91)}%`, borderColor: color },
-            ]}
-          >
-            <View style={[styles.hFaderCapGlowLine, { backgroundColor: color }]} />
-          </View>
-        </View>
-      </View>
-    </View>
-  );
-};
-
-// ===================================================
-// FADER VERTICAL AGRANDADO PARA CUTOFF EN ENVELOPE
-// ===================================================
-interface MiniVerticalFaderProps {
-  label: string;
-  value: number; // 0..100
-  color?: string;
-  onChange: (val: number) => void;
-}
-
-const MiniVerticalFader: React.FC<MiniVerticalFaderProps> = ({
-  label,
-  value,
-  color = '#00E5FF',
-  onChange,
-}) => {
-  const valueRef = useRef(value);
-  valueRef.current = value;
-  const onChangeRef = useRef(onChange);
-  onChangeRef.current = onChange;
-
-  const startVal = useRef(value);
-
-  const panResponder = useRef(
-    PanResponder.create({
-      onStartShouldSetPanResponder: () => true,
-      onStartShouldSetPanResponderCapture: () => true,
-      onMoveShouldSetPanResponder: () => true,
-      onMoveShouldSetPanResponderCapture: () => true,
-      onPanResponderGrant: () => {
-        startVal.current = valueRef.current;
-      },
-      onPanResponderMove: (_: GestureResponderEvent, gestureState: PanResponderGestureState) => {
-        const deltaPercent = -gestureState.dy / 0.8;
-        const newVal = Math.min(Math.max(startVal.current + deltaPercent, 0), 100);
-        onChangeRef.current(Math.round(newVal));
-      },
-      onPanResponderTerminationRequest: () => false,
-      onPanResponderRelease: () => {},
-    })
-  ).current;
-
-  return (
-    <View style={styles.miniFaderCol}>
-      <Text style={styles.miniFaderLabel}>{label}</Text>
-      <View style={styles.miniFaderTrack} {...panResponder.panHandlers}>
-        <View style={styles.miniFaderCenterLine} />
-        <View style={[styles.miniFaderFill, { height: `${value}%`, backgroundColor: color }]} />
-        <View
-          style={[
-            styles.miniFaderCap3D,
-            { bottom: `${Math.min(Math.max(value, 0), 84)}%`, borderColor: color },
-          ]}
-        >
-          <View style={[styles.miniFaderCapLine, { backgroundColor: color }]} />
-        </View>
-      </View>
-      <Text style={[styles.miniFaderValText, { color }]}>{value}%</Text>
-    </View>
-  );
-};
-
-// ===================================================
-// MEDIDOR VU DINÁMICO AISLADO POR CANAL (0ms UI LATENCY)
-// ===================================================
-const ChannelVuMeter: React.FC<{ channelIndex: number; mute: boolean }> = React.memo(({ channelIndex, mute }) => {
-  const [level, setLevel] = useState(0);
-
-  useEffect(() => {
-    if (mute) {
-      setLevel(0);
-      return;
-    }
-    const interval = setInterval(() => {
-      try {
-        const raw = fetchChannelLevels();
-        if (Array.isArray(raw) && raw.length > channelIndex) {
-          const val = Math.min(100, Math.round(raw[channelIndex] * 100));
-          setLevel(val);
-        }
-      } catch (e) {}
-    }, 45);
-
-    return () => clearInterval(interval);
-  }, [channelIndex, mute]);
-
-  return (
-    <View style={styles.vuMeterContainer}>
-      {[...Array(14)].map((_, i) => {
-        const levelThreshold = ((13 - i) / 13) * 100;
-        const isLit = !mute && level >= levelThreshold;
-        let ledColor = '#00E676';
-        if (i < 3) ledColor = '#FF3D00';
-        else if (i < 6) ledColor = '#FFEA00';
-
-        return (
-          <View
-            key={i}
-            style={[
-              styles.vuLedSegment,
-              { backgroundColor: isLit ? ledColor : '#0E141F' },
-            ]}
-          />
-        );
-      })}
-    </View>
-  );
-});
-
-// ===================================================
-// FADER VERTICAL RECTO Y DELGADO DE CANAL
-// ===================================================
-interface ConsoleFaderProps {
-  id: number;
-  name: string;
-  value: number;
-  solo: boolean;
-  mute: boolean;
-  isSelected: boolean;
-  isPlaying: boolean;
-  onSelect: (id: number) => void;
-  onChange: (id: number, val: number) => void;
-  onToggleSolo: (id: number) => void;
-  onToggleMute: (id: number) => void;
-}
-
-const ConsoleFader: React.FC<ConsoleFaderProps> = ({
-  id,
-  name,
-  value,
-  solo,
-  mute,
-  isSelected,
-  isPlaying,
-  onSelect,
-  onChange,
-  onToggleSolo,
-  onToggleMute,
-}) => {
-  const valueRef = useRef(value);
-  valueRef.current = value;
-  const onChangeRef = useRef(onChange);
-  onChangeRef.current = onChange;
-
-  const startVal = useRef(value);
-
-  const panResponder = useRef(
-    PanResponder.create({
-      onStartShouldSetPanResponder: () => true,
-      onStartShouldSetPanResponderCapture: () => true,
-      onMoveShouldSetPanResponder: () => true,
-      onMoveShouldSetPanResponderCapture: () => true,
-      onPanResponderGrant: () => {
-        onSelect(id);
-        startVal.current = valueRef.current;
-      },
-      onPanResponderMove: (_: GestureResponderEvent, gestureState: PanResponderGestureState) => {
-        const deltaPercent = -gestureState.dy / 1.3;
-        const newVal = Math.min(Math.max(startVal.current + deltaPercent, 0), 100);
-        onChangeRef.current(id, Math.round(newVal));
-      },
-      onPanResponderTerminationRequest: () => false,
-      onPanResponderRelease: () => {},
-    })
-  ).current;
-
-  return (
-    <TouchableOpacity
-      activeOpacity={0.9}
-      delayPressIn={0}
-      delayPressOut={0}
-      style={[
-        styles.faderChannelCard,
-        isSelected && styles.faderChannelCardSelected,
-      ]}
-      onPress={() => onSelect(id)}
-    >
-      <Text style={[styles.faderHeaderTitle, isSelected && styles.faderHeaderTitleSelected]}>
-        FADER {id}
-      </Text>
-      <Text style={styles.faderVoiceName} numberOfLines={3}>
-        {name}
-      </Text>
-
-      {/* Solo / Mute */}
-      <View style={styles.soloMuteRow}>
-        <TouchableOpacity
-          activeOpacity={0.7}
-          delayPressIn={0}
-          delayPressOut={0}
-          style={[styles.pillBtnSolo, solo && styles.pillBtnSoloActive]}
-          onPress={() => {
-            onSelect(id);
-            onToggleSolo(id);
-          }}
-        >
-          <Text style={[styles.pillBtnText, solo && styles.pillBtnTextActive]}>SOLO</Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          activeOpacity={0.7}
-          delayPressIn={0}
-          delayPressOut={0}
-          style={[styles.pillBtnMute, mute && styles.pillBtnMuteActive]}
-          onPress={() => {
-            onSelect(id);
-            onToggleMute(id);
-          }}
-        >
-          <Text style={[styles.pillBtnText, mute && styles.pillBtnTextActive]}>MUTE</Text>
-        </TouchableOpacity>
-      </View>
-
-      {/* Pista Recta Delgada + VU Meter Dinámico Aislado */}
-      <View style={styles.faderTrackWrapper}>
-        <ChannelVuMeter channelIndex={id - 1} mute={mute} />
-
-        <View style={styles.faderSlimTrack} {...panResponder.panHandlers}>
-          <View style={styles.faderCenterLine} />
-          <View style={[styles.faderFillBar, { height: `${value}%` }]} />
-          <View
-            style={[
-              styles.faderRectThumbCap,
-              { bottom: `${Math.min(Math.max(value, 0), 90)}%` },
-            ]}
-          >
-            <View style={styles.faderCapCyanLine} />
-          </View>
-        </View>
-      </View>
-
-      <Text style={styles.faderValDisplay}>{value}%</Text>
-    </TouchableOpacity>
-  );
-};
-
-// ===================================================
-// PERILLA CONCÉNTRICA TÁCTIL (PANRESPONDER)
-// ===================================================
-interface ConsoleKnobProps {
-  label: string;
-  value: number;
-  displayValue: string;
-  size?: number;
-  color?: string;
-  onChange: (val: number) => void;
-}
-
-const ConsoleKnob: React.FC<ConsoleKnobProps> = ({
-  label,
-  value,
-  displayValue,
-  size = 54,
-  color = '#FF9100',
-  onChange,
-}) => {
-  const valueRef = useRef(value);
-  valueRef.current = value;
-  const onChangeRef = useRef(onChange);
-  onChangeRef.current = onChange;
-
-  const startVal = useRef(value);
-
-  const panResponder = useRef(
-    PanResponder.create({
-      onStartShouldSetPanResponder: () => true,
-      onStartShouldSetPanResponderCapture: () => true,
-      onMoveShouldSetPanResponder: () => true,
-      onMoveShouldSetPanResponderCapture: () => true,
-      onPanResponderGrant: () => {
-        startVal.current = valueRef.current;
-      },
-      onPanResponderMove: (_: GestureResponderEvent, gestureState: PanResponderGestureState) => {
-        const deltaPercent = -gestureState.dy * 0.9;
-        const newVal = Math.min(Math.max(startVal.current + deltaPercent, 0), 100);
-        onChangeRef.current(Math.round(newVal));
-      },
-      onPanResponderTerminationRequest: () => false,
-      onPanResponderRelease: () => {},
-    })
-  ).current;
-
-  const rotationDeg = -135 + (value / 100) * 270;
-
-  return (
-    <View style={styles.knobCol}>
-      <View
-        style={[
-          styles.knobOuterCircle,
-          { width: size, height: size, borderRadius: size / 2 },
-        ]}
-        {...panResponder.panHandlers}
-      >
-        <Svg width={size} height={size} viewBox="0 0 60 60" style={styles.absoluteCenter}>
-          <Circle cx="30" cy="30" r="25" stroke="#121A26" strokeWidth="4" fill="none" />
-          <Circle
-            cx="30"
-            cy="30"
-            r="25"
-            stroke={color}
-            strokeWidth="4"
-            strokeDasharray={`${(value / 100) * 125} 200`}
-            strokeLinecap="round"
-            fill="none"
-            transform="rotate(135 30 30)"
-          />
-        </Svg>
-
-        <View
-          style={[
-            styles.knobDialBody,
-            {
-              width: size - 14,
-              height: size - 14,
-              borderRadius: (size - 14) / 2,
-              transform: [{ rotate: `${rotationDeg}deg` }],
-            },
-          ]}
-        >
-          <View style={[styles.knobDialIndicator, { backgroundColor: color }]} />
-        </View>
-      </View>
-
-      <Text style={styles.knobTitleText}>{label}</Text>
-      <Text style={[styles.knobValueText, { color }]}>{displayValue}</Text>
-    </View>
-  );
-};
 
 // ===================================================
 // APLICACIÓN PRINCIPAL (SYNTH CONNECT PRO)
@@ -600,6 +56,8 @@ export default function App() {
   const {
     devices,
     usbDevices,
+    connectedUsbDevice,
+    connectedBleDevice,
     connectedDeviceId,
     connectedDeviceName,
     isDirectUsbActive,
@@ -617,21 +75,36 @@ export default function App() {
   } = useMidiDevices();
 
   const [isBleModalVisible, setIsBleModalVisible] = useState<boolean>(false);
+
+  // Pedal de sustain virtual (muchos teclados Bluetooth no envían el pedal por MIDI)
+  const [isSustainOn, setIsSustainOn] = useState<boolean>(false);
+  const toggleSustain = () => {
+    setIsSustainOn((prev) => {
+      const next = !prev;
+      setSustainPedal(next);
+      return next;
+    });
+  };
   const [isConnectingAddress, setIsConnectingAddress] = useState<string | null>(null);
 
-  const connectedBleDevice = devices.find((d) => d.type === 'BLUETOOTH');
-  const connectedUsbDevice = usbDevices.length > 0 ? usbDevices[0] : devices.find((d) => d.type === 'USB');
 
   const handleOpenBluetoothModal = async () => {
     setIsBleModalVisible(true);
     const granted = await requestBluetoothPermissions();
     if (granted) {
-      startBleScan();
+      const started = await startBleScan();
+      if (!started) {
+        showAlert(
+          'WARNING',
+          'BLUETOOTH APAGADO',
+          'Activa el Bluetooth del teléfono para buscar teclados MIDI inalámbricos.'
+        );
+      }
     } else {
       showAlert(
         'WARNING',
         'PERMISOS BLUETOOTH REQUERIDOS',
-        'Se requieren permisos de Dispositivos Cercanos y Ubicación para buscar teclados Bluetooth.'
+        'Se requiere el permiso de Dispositivos Cercanos para buscar teclados Bluetooth.'
       );
     }
   };
@@ -697,14 +170,14 @@ export default function App() {
   const [renameInputText, setRenameInputText] = useState<string>('');
 
   const [activeBank, setActiveBank] = useState<number>(1);
-  const [modulation, setModulation] = useState<number>(40);
+  const [modulation, setModulation] = useState<number>(0);
   const [selectedFaderId, setSelectedFaderId] = useState<number>(1);
 
   // Transposición Global (Aplica a todos los faders)
   const [transpose, setTranspose] = useState<number>(0);
 
   // Selección de parámetro activo en el visualizador ADSR
-  const [selectedAdsr, setSelectedAdsr] = useState<'ATTACK' | 'DELAY' | 'SUSTAIN' | 'RELEASE'>('ATTACK');
+  const [selectedAdsr, setSelectedAdsr] = useState<'ATTACK' | 'DECAY' | 'SUSTAIN' | 'RELEASE'>('ATTACK');
 
   // Hora y Batería Reales del Dispositivo
   const [currentTimeStr, setCurrentTimeStr] = useState<string>('');
@@ -712,7 +185,7 @@ export default function App() {
 
   // Faders State (Cada fader con su octava y efectos DSP independientes)
   const [faders, setFaders] = useState([
-    { id: 1, name: 'Concert Grand Piano', value: 80, solo: false, mute: false, octave: 0, cutoff: 100, resonance: 20, attack: 0, delay: 45, sustain: 100, release: 30 },
+    { id: 1, name: 'Yamaha CFX Grand', value: 80, solo: false, mute: false, octave: 0, cutoff: 100, resonance: 20, attack: 0, delay: 45, sustain: 100, release: 30 },
     { id: 2, name: 'Ambient Pad Warm', value: 65, solo: false, mute: false, octave: 0, cutoff: 90, resonance: 25, attack: 15, delay: 50, sustain: 90, release: 40 },
     { id: 3, name: 'Syn Strings Symphony', value: 50, solo: false, mute: false, octave: 0, cutoff: 95, resonance: 20, attack: 10, delay: 45, sustain: 95, release: 35 },
     { id: 4, name: 'Synth Lead Moog Saw', value: 75, solo: false, mute: false, octave: 0, cutoff: 100, resonance: 30, attack: 0, delay: 40, sustain: 100, release: 25 },
@@ -731,14 +204,14 @@ export default function App() {
     loadUserSoundfonts();
   }, []);
 
-  const fullVoiceLibrary = [...VOICE_LIBRARY, ...customVoices];
+  const fullVoiceLibrary = useMemo(() => [...VOICE_LIBRARY, ...customVoices], [customVoices]);
 
   // Sincronización continua de mezcla, voces, octava y efectos por fader a C++ NDK
   useEffect(() => {
     faders.forEach((fader, index) => {
       const foundVoice = fullVoiceLibrary.find((v) => v.id === fader.name || v.name === fader.name);
       setLayerMix(index, fader.value / 100, fader.mute, fader.solo);
-      setLayerVoice(index, fader.name, foundVoice?.sf2Preset ?? index, foundVoice?.sf2Path || '');
+      setLayerVoice(index, fader.name, foundVoice?.sf2Preset ?? 0, foundVoice?.sf2Path || '');
       setLayerOctave(index, fader.octave);
       setLayerParam(index, 'cutoff', fader.cutoff);
       setLayerParam(index, 'resonance', fader.resonance);
@@ -980,7 +453,7 @@ export default function App() {
       newFaders.forEach((f, idx) => {
         const foundVoice = fullVoiceLibrary.find((v) => v.id === f.name || v.name === f.name);
         setLayerMix(idx, f.value / 100, f.mute, f.solo);
-        setLayerVoice(idx, f.name, foundVoice?.sf2Preset ?? idx, foundVoice?.sf2Path || '');
+        setLayerVoice(idx, f.name, foundVoice?.sf2Preset ?? 0, foundVoice?.sf2Path || '');
         setLayerOctave(idx, f.octave);
         setLayerParam(idx, 'cutoff', f.cutoff);
         setLayerParam(idx, 'resonance', f.resonance);
@@ -1001,7 +474,7 @@ export default function App() {
 
     const matchStyle = availableStyles.find((s) => s.id === preset.styleId || s.name === preset.styleName);
     if (matchStyle) {
-      selectStyle(matchStyle);
+      selectStyle(matchStyle, preset.bpm);
     }
 
     setActiveBank(bankNum);
@@ -1164,7 +637,6 @@ export default function App() {
     setFaders((prev) =>
       prev.map((f) => (f.id === id ? { ...f, value: newVal } : f))
     );
-    setParam(`fader_${id}`, newVal);
   };
 
   const toggleSolo = (id: number) => {
@@ -1179,6 +651,13 @@ export default function App() {
     );
   };
 
+  // OCTAVE desplaza todos los faders juntos (conservando la diferencia entre ellos)
+  const shiftAllOctaves = (delta: number) => {
+    const next = faders.map((f) => ({ ...f, octave: Math.max(-3, Math.min(3, f.octave + delta)) }));
+    setFaders(next);
+    next.forEach((f, idx) => setLayerOctave(idx, f.octave));
+  };
+
   const handleStartStop = () => {
     startStopStyle();
   };
@@ -1188,7 +667,7 @@ export default function App() {
   const getAdsrCurrentValue = () => {
     switch (selectedAdsr) {
       case 'ATTACK': return activeFader.attack;
-      case 'DELAY': return activeFader.delay;
+      case 'DECAY': return activeFader.delay;
       case 'SUSTAIN': return activeFader.sustain;
       case 'RELEASE': return activeFader.release;
     }
@@ -1200,7 +679,7 @@ export default function App() {
         if (f.id !== activeFader.id) return f;
         const updated = { ...f };
         if (selectedAdsr === 'ATTACK') { updated.attack = val; setLayerParam(f.id - 1, 'attack', val); }
-        if (selectedAdsr === 'DELAY') { updated.delay = val; setLayerParam(f.id - 1, 'decay', val); }
+        if (selectedAdsr === 'DECAY') { updated.delay = val; setLayerParam(f.id - 1, 'decay', val); }
         if (selectedAdsr === 'SUSTAIN') { updated.sustain = val; setLayerParam(f.id - 1, 'sustain', val); }
         if (selectedAdsr === 'RELEASE') { updated.release = val; setLayerParam(f.id - 1, 'release', val); }
         return updated;
@@ -1210,10 +689,10 @@ export default function App() {
 
   const getAdsrDisplayValue = () => {
     switch (selectedAdsr) {
-      case 'ATTACK': return `${Math.round((activeFader.attack / 100) * 500)}ms`;
-      case 'DELAY': return `${((activeFader.delay / 100) * 4.9 + 0.1).toFixed(1)}s`;
-      case 'SUSTAIN': return `${activeFader.sustain}%`;
-      case 'RELEASE': return `${((activeFader.release / 100) * 4.9 + 0.1).toFixed(1)}s`;
+      case 'ATTACK': return formatAttack(activeFader.attack);
+      case 'DECAY': return formatDecay(activeFader.delay);
+      case 'SUSTAIN': return formatSustain(activeFader.sustain);
+      case 'RELEASE': return formatRelease(activeFader.release);
     }
   };
 
@@ -1294,6 +773,19 @@ export default function App() {
               {connectedBleDevice ? `${connectedBleDevice.name.toUpperCase()} (BLE)` : 'BT MIDI'}
             </Text>
             {connectedBleDevice && <View style={styles.btHeaderConnectedDot} />}
+          </TouchableOpacity>
+
+          {/* 3. Pedal de sustain virtual */}
+          <TouchableOpacity
+            activeOpacity={0.7}
+            delayPressIn={0}
+            delayPressOut={0}
+            style={[styles.btHeaderBtn, isSustainOn && styles.sustainHeaderBtnOn]}
+            onPress={toggleSustain}
+          >
+            <Text style={[styles.btHeaderBtnText, isSustainOn && styles.sustainHeaderBtnTextOn]}>
+              {isSustainOn ? 'SUSTAIN ON' : 'SUSTAIN'}
+            </Text>
           </TouchableOpacity>
         </View>
 
@@ -1774,20 +1266,14 @@ export default function App() {
             {/* OCTAVE (Por Fader Seleccionado) & TRANSPOSE (Global para Todos los Faders) */}
             <View style={styles.centerBottomControlRow}>
               <View style={styles.octaveTrpBlock}>
-                <Text style={styles.octaveTrpTitle}>OCTAVE (F{activeFader.id})</Text>
+                <Text style={styles.octaveTrpTitle}>OCTAVE</Text>
                 <View style={styles.octaveTrpRowInner}>
                   <TouchableOpacity
                     activeOpacity={0.7}
                     delayPressIn={0}
                     delayPressOut={0}
                     style={styles.octaveMinusBtn}
-                    onPress={() => {
-                      const newOct = Math.max(activeFader.octave - 1, -3);
-                      setFaders((prev) =>
-                        prev.map((f) => (f.id === activeFader.id ? { ...f, octave: newOct } : f))
-                      );
-                      setLayerOctave(activeFader.id - 1, newOct);
-                    }}
+                    onPress={() => shiftAllOctaves(-1)}
                   >
                     <Text style={styles.octaveBtnSymbol}>-</Text>
                   </TouchableOpacity>
@@ -1801,13 +1287,7 @@ export default function App() {
                     delayPressIn={0}
                     delayPressOut={0}
                     style={styles.octavePlusBtn}
-                    onPress={() => {
-                      const newOct = Math.min(activeFader.octave + 1, 3);
-                      setFaders((prev) =>
-                        prev.map((f) => (f.id === activeFader.id ? { ...f, octave: newOct } : f))
-                      );
-                      setLayerOctave(activeFader.id - 1, newOct);
-                    }}
+                    onPress={() => shiftAllOctaves(1)}
                   >
                     <Text style={styles.octaveBtnSymbol}>+</Text>
                   </TouchableOpacity>
@@ -1901,15 +1381,15 @@ export default function App() {
                       <Circle
                         cx={adsrCoords.p2.x}
                         cy={adsrCoords.p2.y}
-                        r={selectedAdsr === 'DELAY' ? '5.5' : '4'}
-                        fill={selectedAdsr === 'DELAY' ? '#FF9100' : '#FFFFFF'}
+                        r={selectedAdsr === 'DECAY' ? '5.5' : '4'}
+                        fill={selectedAdsr === 'DECAY' ? '#FF9100' : '#FFFFFF'}
                         stroke="#FF9100"
                         strokeWidth="2"
                       />
                       <SvgText
                         x={adsrCoords.p2.x}
                         y={adsrCoords.p2.y - 6}
-                        fill={selectedAdsr === 'DELAY' ? '#FF9100' : '#8A9EB8'}
+                        fill={selectedAdsr === 'DECAY' ? '#FF9100' : '#8A9EB8'}
                         fontSize="8"
                         fontWeight="bold"
                         textAnchor="middle"
@@ -1986,15 +1466,15 @@ export default function App() {
                     </View>
                   </View>
 
-                  {/* 3. ABAJO: 4 Botones ADSR (ATTACK, DELAY, SUSTAIN, RELEASE) */}
+                  {/* 3. ABAJO: 4 Botones ADSR (ATTACK, DECAY, SUSTAIN, RELEASE) */}
                   <View style={styles.adsrFourBtnsRow}>
-                    {(['ATTACK', 'DELAY', 'SUSTAIN', 'RELEASE'] as const).map((param) => {
+                    {(['ATTACK', 'DECAY', 'SUSTAIN', 'RELEASE'] as const).map((param) => {
                       const isSel = selectedAdsr === param;
                       let displayVal = '';
-                      if (param === 'ATTACK') displayVal = `${Math.round((activeFader.attack / 100) * 500)}ms`;
-                      if (param === 'DELAY') displayVal = `${((activeFader.delay / 100) * 4.9 + 0.1).toFixed(1)}s`;
-                      if (param === 'SUSTAIN') displayVal = `${activeFader.sustain}%`;
-                      if (param === 'RELEASE') displayVal = `${((activeFader.release / 100) * 4.9 + 0.1).toFixed(1)}s`;
+                      if (param === 'ATTACK') displayVal = formatAttack(activeFader.attack);
+                      if (param === 'DECAY') displayVal = formatDecay(activeFader.delay);
+                      if (param === 'SUSTAIN') displayVal = formatSustain(activeFader.sustain);
+                      if (param === 'RELEASE') displayVal = formatRelease(activeFader.release);
 
                       return (
                         <TouchableOpacity
@@ -2760,7 +2240,7 @@ export default function App() {
                   </View>
                 ) : (
                   discoveredBleDevices.map((dev) => {
-                    const isCurrent = connectedBleDevice?.name.toLowerCase() === dev.name.toLowerCase() || dev.isConnected;
+                    const isCurrent = dev.isConnected;
                     const isConnecting = isConnectingAddress === dev.address;
 
                     return (
@@ -2841,11 +2321,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 6,
     paddingVertical: 2,
   },
-  absoluteCenter: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-  },
   header: {
     height: 32,
     flexDirection: 'row',
@@ -2898,6 +2373,14 @@ const styles = StyleSheet.create({
     backgroundColor: '#071D2B',
     borderColor: '#00E5FF',
   },
+  sustainHeaderBtnOn: {
+    backgroundColor: '#1F1A05',
+    borderColor: '#FFC400',
+  },
+  sustainHeaderBtnTextOn: {
+    color: '#FFC400',
+    fontWeight: '900',
+  },
   btHeaderBtnScanning: {
     borderColor: '#2979FF',
     backgroundColor: '#0C1A30',
@@ -2922,8 +2405,6 @@ const styles = StyleSheet.create({
     backgroundColor: '#00E676',
     marginLeft: 1,
   },
-
-  // ================= ESTILOS MODAL BLUETOOTH =================
   bleModalBox: {
     width: '92%',
     maxWidth: 580,
@@ -3290,8 +2771,6 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     marginTop: 4,
   },
-
-  // ================= STYLES PANEL (LEFT) =================
   leftPanel: {
     width: '31%',
     backgroundColor: '#0D121B',
@@ -3467,8 +2946,6 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontWeight: '900',
   },
-
-  // ================= PERFORMANCE LAYERS (CENTER) =================
   centerPanel: {
     width: '34%',
     backgroundColor: '#0D121B',
@@ -3484,154 +2961,6 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     flex: 1,
     marginVertical: 2,
-  },
-  faderChannelCard: {
-    width: '23.5%',
-    backgroundColor: '#070A10',
-    borderRadius: 6,
-    padding: 3,
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    borderWidth: 1,
-    borderColor: '#141E2C',
-  },
-  faderChannelCardSelected: {
-    borderColor: '#00E5FF',
-    borderWidth: 2,
-    shadowColor: '#00E5FF',
-    shadowOpacity: 0.8,
-    shadowRadius: 5,
-    elevation: 4,
-  },
-  faderHeaderTitle: {
-    color: '#3B4D63',
-    fontSize: 7,
-    fontWeight: '800',
-  },
-  faderHeaderTitleSelected: {
-    color: '#00E5FF',
-    fontWeight: '900',
-  },
-  faderVoiceName: {
-    color: '#00E5FF',
-    fontSize: 7.5,
-    fontWeight: '700',
-    height: 26,
-    textAlign: 'center',
-    lineHeight: 8.5,
-    marginVertical: 1,
-  },
-  soloMuteRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    width: '100%',
-    marginVertical: 2,
-  },
-  pillBtnSolo: {
-    width: '47%',
-    paddingVertical: 2,
-    backgroundColor: '#101620',
-    borderRadius: 3,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#172332',
-  },
-  pillBtnSoloActive: {
-    backgroundColor: '#00A3FF',
-    borderColor: '#00E5FF',
-  },
-  pillBtnMute: {
-    width: '47%',
-    paddingVertical: 2,
-    backgroundColor: '#101620',
-    borderRadius: 3,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#172332',
-  },
-  pillBtnMuteActive: {
-    backgroundColor: '#FF3D00',
-    borderColor: '#FF8A80',
-  },
-  pillBtnText: {
-    color: '#4C6078',
-    fontSize: 6,
-    fontWeight: '800',
-  },
-  pillBtnTextActive: {
-    color: '#FFFFFF',
-  },
-  faderTrackWrapper: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    flex: 1,
-    width: '100%',
-  },
-  vuMeterContainer: {
-    width: 4,
-    height: 140,
-    backgroundColor: '#06080D',
-    borderRadius: 2,
-    justifyContent: 'space-between',
-    marginRight: 3,
-    paddingVertical: 1,
-  },
-  vuLedSegment: {
-    width: 4,
-    height: 8,
-    borderRadius: 1,
-  },
-  faderSlimTrack: {
-    width: 12,
-    height: 140,
-    backgroundColor: '#070A0F',
-    borderRadius: 2,
-    borderWidth: 1,
-    borderColor: '#151E2B',
-    position: 'relative',
-    justifyContent: 'flex-end',
-    alignItems: 'center',
-    overflow: 'visible',
-  },
-  faderCenterLine: {
-    position: 'absolute',
-    width: 2,
-    height: '100%',
-    backgroundColor: '#172333',
-  },
-  faderFillBar: {
-    width: '100%',
-    backgroundColor: '#00E5FF',
-    borderRadius: 1,
-    opacity: 0.85,
-  },
-  faderRectThumbCap: {
-    position: 'absolute',
-    width: 26,
-    height: 14,
-    borderRadius: 3,
-    backgroundColor: '#1E2B3D',
-    borderWidth: 1,
-    borderColor: '#00E5FF',
-    justifyContent: 'center',
-    alignItems: 'center',
-    shadowColor: '#00E5FF',
-    shadowOpacity: 0.6,
-    shadowRadius: 4,
-    elevation: 4,
-  },
-  faderCapCyanLine: {
-    width: 12,
-    height: 2,
-    backgroundColor: '#00E5FF',
-    borderRadius: 1,
-  },
-  faderValDisplay: {
-    color: '#00E5FF',
-    fontSize: 7,
-    fontWeight: '800',
-    marginTop: 2,
   },
   centerBottomControlRow: {
     flexDirection: 'row',
@@ -3687,8 +3016,6 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: '900',
   },
-
-  // ================= RIGHT PANEL =================
   rightPanel: {
     flex: 1,
     backgroundColor: '#0D121B',
@@ -3741,61 +3068,6 @@ const styles = StyleSheet.create({
     width: '45%',
     alignItems: 'center',
   },
-  miniFaderCol: {
-    alignItems: 'center',
-    height: 92,
-    justifyContent: 'space-between',
-  },
-  miniFaderLabel: {
-    color: '#3B4D63',
-    fontSize: 6,
-    fontWeight: '800',
-  },
-  miniFaderTrack: {
-    width: 12,
-    height: 68,
-    backgroundColor: '#0A0F17',
-    borderRadius: 3,
-    borderWidth: 1,
-    borderColor: '#16202E',
-    justifyContent: 'flex-end',
-    alignItems: 'center',
-    position: 'relative',
-    overflow: 'visible',
-  },
-  miniFaderCenterLine: {
-    position: 'absolute',
-    width: 2,
-    height: '100%',
-    backgroundColor: '#16202E',
-  },
-  miniFaderFill: {
-    width: '100%',
-    borderRadius: 2,
-  },
-  miniFaderCap3D: {
-    position: 'absolute',
-    width: 20,
-    height: 10,
-    borderRadius: 2,
-    backgroundColor: '#1E2B3D',
-    borderWidth: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    shadowColor: '#00E5FF',
-    shadowOpacity: 0.5,
-    shadowRadius: 3,
-    elevation: 3,
-  },
-  miniFaderCapLine: {
-    width: 10,
-    height: 1.5,
-    borderRadius: 1,
-  },
-  miniFaderValText: {
-    fontSize: 7,
-    fontWeight: '800',
-  },
   adsrFourBtnsRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -3832,8 +3104,6 @@ const styles = StyleSheet.create({
   adsrFourBtnValActive: {
     color: '#FFFFFF',
   },
-
-  // Tarjeta de Tempo desplazada directamente debajo de ADSR
   tempoCardShiftedUpDirect: {
     backgroundColor: '#06090E',
     borderRadius: 6,
@@ -3889,8 +3159,6 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '900',
   },
-
-  // Tarjeta de Resonancia debajo de Tempo
   resonanceCardBelowTempo: {
     backgroundColor: '#06090E',
     borderRadius: 6,
@@ -3899,8 +3167,6 @@ const styles = StyleSheet.create({
     borderColor: '#121A24',
     marginTop: 3,
   },
-
-  // Tarjeta de Bancos de Memoria
   banksContainerStretchedFullHeight: {
     width: '37%',
     backgroundColor: '#06090E',
@@ -3977,77 +3243,6 @@ const styles = StyleSheet.create({
   bankCardNumActive: {
     color: '#00E676',
   },
-
-  // Componentes de Fader Horizontal 3D
-  hFaderWrapper: {
-    width: '100%',
-    marginVertical: 1,
-  },
-  hFaderHeaderRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 1,
-  },
-  hFaderLabel: {
-    color: '#3B4D63',
-    fontSize: 7,
-    fontWeight: '800',
-  },
-  hFaderValText: {
-    fontSize: 8,
-    fontWeight: '700',
-  },
-  hFaderTrackRowContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    width: '100%',
-    height: 14,
-  },
-  hFaderIconText: {
-    fontSize: 10,
-    marginRight: 4,
-  },
-  hFaderTrackSlot: {
-    flex: 1,
-    height: 10,
-    backgroundColor: '#06080D',
-    borderRadius: 4,
-    position: 'relative',
-    justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: '#121A24',
-    overflow: 'visible',
-  },
-  hFaderGrooveLine: {
-    position: 'absolute',
-    width: '100%',
-    height: 2,
-    backgroundColor: '#16202E',
-  },
-  hFaderFillBar: {
-    height: '100%',
-    borderRadius: 3,
-    opacity: 0.85,
-  },
-  hFaderMasterCap3D: {
-    position: 'absolute',
-    width: 22,
-    height: 16,
-    borderRadius: 3,
-    backgroundColor: '#1E2B3D',
-    borderWidth: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    shadowColor: '#00E5FF',
-    shadowOpacity: 0.7,
-    shadowRadius: 4,
-    elevation: 4,
-  },
-  hFaderCapGlowLine: {
-    width: 2,
-    height: 10,
-    borderRadius: 1,
-  },
   rightBottomModRow: {
     width: '100%',
     backgroundColor: '#06090E',
@@ -4056,42 +3251,6 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#121A24',
   },
-  knobCol: {
-    alignItems: 'center',
-  },
-  knobOuterCircle: {
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: '#0A0F17',
-    borderWidth: 1,
-    borderColor: '#16202E',
-    position: 'relative',
-  },
-  knobDialBody: {
-    backgroundColor: '#16202E',
-    justifyContent: 'flex-start',
-    alignItems: 'center',
-    paddingTop: 3,
-    borderWidth: 1,
-    borderColor: '#263447',
-    position: 'relative',
-  },
-  knobDialIndicator: {
-    width: 3,
-    height: 7,
-    borderRadius: 1.5,
-  },
-  knobTitleText: {
-    color: '#3B4D63',
-    fontSize: 7,
-    fontWeight: '800',
-    marginTop: 2,
-  },
-  knobValueText: {
-    fontSize: 8,
-    fontWeight: '700',
-  },
-  // Modal Overlay & Content Box
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(4, 7, 12, 0.88)',
@@ -4467,8 +3626,6 @@ const styles = StyleSheet.create({
     fontSize: 7,
     fontWeight: '900',
   },
-
-  // ================= ESTILOS DE VISTAS INTEGRADAS A PANTALLA COMPLETA =================
   fullScreenLibraryContainer: {
     flex: 1,
     backgroundColor: '#070A0F',
@@ -4803,8 +3960,6 @@ const styles = StyleSheet.create({
     fontSize: 8.5,
     fontWeight: '900',
   },
-
-  // ================= ESTILOS DE BOTONES RECTANGULARES DE TRANSPORTE =================
   transportRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -4888,8 +4043,6 @@ const styles = StyleSheet.create({
     color: '#FF5252',
     fontWeight: '900',
   },
-
-  // ================= ESTILOS CONTROLES DE CENTRO =================
   centerControlsRowBottom: {
     flexDirection: 'row',
     justifyContent: 'space-between',

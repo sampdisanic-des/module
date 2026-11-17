@@ -25,7 +25,7 @@ public:
         float clamped = cutoffHz < 30.0f ? 30.0f : (cutoffHz > maxCutoff ? maxCutoff : cutoffHz);
         if (std::abs(mCutoffHz - clamped) > 0.1f) {
             mCutoffHz = clamped;
-            mBypass = (mCutoffHz >= 17000.0f && mResonance <= 1.05f);
+            updateBypass();
             updateCoefficients();
         }
     }
@@ -34,7 +34,7 @@ public:
         float clamped = Q < 0.2f ? 0.2f : (Q > 8.0f ? 8.0f : Q);
         if (std::abs(mResonance - clamped) > 0.01f) {
             mResonance = clamped;
-            mBypass = (mCutoffHz >= 17000.0f && mResonance <= 1.05f);
+            updateBypass();
             updateCoefficients();
         }
     }
@@ -60,6 +60,13 @@ public:
     }
 
 private:
+    // Con el corte por encima de 17 kHz el filtro es inaudible: se omite
+    void updateBypass() {
+        bool bypass = mCutoffHz >= 17000.0f;
+        if (mBypass && !bypass) reset(); // evitar chasquidos por estado viejo
+        mBypass = bypass;
+    }
+
     void updateCoefficients() {
         if (mBypass) return;
 

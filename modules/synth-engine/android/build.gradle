@@ -21,7 +21,7 @@ android {
 
     externalNativeBuild {
       cmake {
-        cppFlags "-std=c++17", "-frtti", "-fexceptions", "-Wl,-z,max-page-size=16384"
+        cppFlags "-std=c++17", "-frtti", "-fexceptions"
         arguments "-DANDROID_STL=c++_shared", "-DANDROID_PLATFORM=android-26", "-DCMAKE_SHARED_LINKER_FLAGS=-Wl,-z,max-page-size=16384"
       }
     }
@@ -59,4 +59,5 @@ dependencies {
   implementation project(':expo-modules-core')
   implementation 'com.facebook.react:react-android:+'
   implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk8"
+  testImplementation "junit:junit:4.13.2"
 }

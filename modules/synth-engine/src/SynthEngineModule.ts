@@ -4,6 +4,7 @@ export interface MidiDeviceInfoTS {
   id: string;
   name: string;
   type: 'USB' | 'BLUETOOTH';
+  connected: boolean;
 }
 
 export interface SystemMidiDeviceDiag {
@@ -55,6 +56,8 @@ export interface StylePlaybackState {
   currentBeat: number; // 1, 2, 3, 4
   currentSection: string;
   queuedSection: string;
+  isSyncStart?: boolean;
+  chord?: string;
 }
 
 export interface DiscoveredBleDeviceTS {
@@ -95,6 +98,10 @@ export interface ISynthEngineNativeModule {
   setStyleSection(section: string): void;
   queueNextStyleSection(section: string): void;
   getStylePlaybackState(): StylePlaybackState;
+  setSyncStart(armed: boolean): void;
+  allNotesOff(): void;
+  setSustainPedal(on: boolean): void;
+  getSampleRate(): number;
 
   setParam(paramName: string, value: number): void;
 
@@ -107,6 +114,7 @@ export interface ISynthEngineNativeModule {
 
   isBluetoothEnabled(): boolean;
   isBleScanning(): boolean;
+  requestEnableBluetooth(): boolean;
   startBleScan(): boolean;
   stopBleScan(): boolean;
   getDiscoveredBleDevices(): DiscoveredBleDeviceTS[];
@@ -153,8 +161,14 @@ try {
       isPlaying: false,
       currentBeat: 1,
       currentSection: 'MAIN_A',
-      queuedSection: ''
+      queuedSection: '',
+      isSyncStart: false,
+      chord: '---'
     }),
+    setSyncStart: () => {},
+    allNotesOff: () => {},
+    setSustainPedal: () => {},
+    getSampleRate: () => 0,
     setParam: () => {},
     getDetectedChord: () => '---',
     setSplitPoint: () => {},
@@ -163,6 +177,7 @@ try {
     connectMidiDevice: () => false,
     isBluetoothEnabled: () => false,
     isBleScanning: () => false,
+    requestEnableBluetooth: () => false,
     startBleScan: () => false,
     stopBleScan: () => true,
     getDiscoveredBleDevices: () => [],

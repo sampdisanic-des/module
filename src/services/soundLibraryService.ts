@@ -1,6 +1,6 @@
 import * as FileSystem from 'expo-file-system';
 import * as DocumentPicker from 'expo-document-picker';
-import { VoicePreset } from '../../App';
+import { VoicePreset } from '../data/voiceLibrary';
 
 const SOUNDFONTS_DIR = `${FileSystem.documentDirectory}soundfonts/`;
 const INDEX_FILE = `${SOUNDFONTS_DIR}soundfonts_index.json`;

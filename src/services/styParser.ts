@@ -194,10 +194,15 @@ export function parseMidiStyleBinary(data: Uint8Array, styleName: string = 'Cust
       let status = data[pos];
 
       if (status < 0x80) {
+        if (lastStatus === 0) {
+          pos++; // byte de datos sin estado previo: archivo corrupto, saltar
+          continue;
+        }
         status = lastStatus; // Running status
       } else {
         pos++;
-        lastStatus = status;
+        // Solo los mensajes de canal establecen running status; meta y SysEx lo cancelan
+        lastStatus = status < 0xf0 ? status : 0;
       }
 
       if (status === 0xff) {
@@ -206,17 +211,18 @@ export function parseMidiStyleBinary(data: Uint8Array, styleName: string = 'Cust
         const metaLen = readVarLength();
         const metaStart = pos;
 
-        if (metaType === 0x06 || metaType === 0x01 || metaType === 0x03) {
-          // Marker / Text / Track Name
+        if (metaType === 0x06) {
+          // Marker (Yamaha SFF: "SInt", "Main A", "Fill In AA", "Ending A"...)
           const markerText = readString(metaLen);
           markers.push({ name: markerText, absTick: currentAbsTick });
+          pos = metaStart + metaLen;
         } else if (metaType === 0x51 && metaLen === 3) {
           // Set Tempo (Microseconds per quarter note)
           const usPerQuarter = (data[pos] << 16) | (data[pos + 1] << 8) | data[pos + 2];
           if (usPerQuarter > 0) {
             detectedBpm = Math.round(60000000 / usPerQuarter);
           }
-          pos += metaLen;
+          pos = metaStart + metaLen;
         } else {
           pos = metaStart + metaLen;
         }
@@ -321,14 +327,19 @@ export function parseMidiStyleBinary(data: Uint8Array, styleName: string = 'Cust
   // Ordenar secciones por tick de inicio
   recognizedSections.sort((a, b) => a.startTick - b.startTick);
 
-  // Calcular endTick de cada sección
-  for (let i = 0; i < recognizedSections.length; i++) {
-    if (i < recognizedSections.length - 1) {
-      recognizedSections[i].endTick = recognizedSections[i + 1].startTick;
+  // Calcular endTick de cada sección con TODOS los marcadores (también los no
+  // reconocidos, p. ej. "Fill In BA"), para que una sección no absorba a la siguiente
+  const allMarkerTicks = markers.map((m) => m.absTick).sort((a, b) => a - b);
+  const lastEventTick = noteEvents.reduce((m, e) => Math.max(m, e.tick + e.durationTicks), 0);
+  for (const sec of recognizedSections) {
+    const next = allMarkerTicks.find((t) => t > sec.startTick);
+    if (next !== undefined) {
+      sec.endTick = next;
     } else {
-      // Ultima sección: calcular según el último evento
-      const maxTick = noteEvents.reduce((m, e) => Math.max(m, e.tick + e.durationTicks), recognizedSections[i].startTick + ppq * 8);
-      recognizedSections[i].endTick = maxTick;
+      // Última sección: redondear al compás completo que contiene su último evento
+      const bar = ppq * 4;
+      const span = Math.max(lastEventTick - sec.startTick, bar);
+      sec.endTick = sec.startTick + Math.ceil(span / bar) * bar;
     }
   }
 
@@ -342,8 +353,11 @@ export function parseMidiStyleBinary(data: Uint8Array, styleName: string = 'Cust
       .map((e) => ({
         ...e,
         tick: e.tick - start,
+        // Las notas no se extienden más allá del final de su sección
+        durationTicks: Math.max(1, Math.min(e.durationTicks, end - e.tick)),
         program: channelPrograms[e.channel],
-      }));
+      }))
+      .sort((a, b) => a.tick - b.tick);
 
     sections[sec.key] = {
       lengthInBeats: Math.round(secTicks / ppq),

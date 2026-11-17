@@ -1,6 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
-  fetchDetectedChord,
   updateSplitPoint,
   updateStyleMasterVolume,
   resetNativeStyleData,
@@ -13,6 +12,7 @@ import {
   setNativeStyleSection,
   queueNativeStyleSection,
   fetchStylePlaybackState,
+  setNativeSyncStart,
 } from '../../modules/synth-engine/src/index';
 import StyleLibraryService, {
   StylePreset,
@@ -68,7 +68,7 @@ export interface UseArrangerReturn {
   pauseStyle: () => void;
   toggleSyncStart: () => void;
   toggleAccompaniment: () => void;
-  selectStyle: (preset: StylePreset) => Promise<void>;
+  selectStyle: (preset: StylePreset, bpmOverride?: number) => Promise<void>;
   importStyleFiles: (targetCategory?: string) => Promise<StyleImportResult>;
   deleteStyleFile: (styleId: string) => Promise<void>;
   renameStyleFile: (styleId: string, newName: string) => Promise<void>;
@@ -106,40 +106,40 @@ export const useArranger = (): UseArrangerReturn => {
   const bpmRef = useRef(bpm);
   bpmRef.current = bpm;
 
-  // Polling del acorde detectado y estado del secuenciador nativo C++
+  // BPM a aplicar al terminar de cargar el próximo estilo (p. ej. desde un banco de memoria)
+  const pendingBpmRef = useRef<number | null>(null);
+  const loadedStyleRef = useRef(loadedStyle);
+  loadedStyleRef.current = loadedStyle;
+
+  // Polling del estado del secuenciador nativo (una sola llamada JNI por ciclo).
+  // El Sync Start lo resuelve el motor C++ en el mismo Note On (0 ms).
   useEffect(() => {
     const interval = setInterval(() => {
-      const chord = fetchDetectedChord();
+      const status = fetchStylePlaybackState();
+      if (!status) return;
+
+      const chord = status.chord ?? '---';
       if (chord !== currentChordRef.current) {
+        currentChordRef.current = chord;
         setCurrentChord(chord);
       }
+      setCurrentBeatState(status.currentBeat || 1);
+      setQueuedSectionState(status.queuedSection || '');
+      setIsSyncStart(!!status.isSyncStart);
 
-      if (isSyncStart && !isPlayingRef.current && chord !== '---') {
-        setIsPlaying(true);
-        isPlayingRef.current = true;
-        setIsSyncStart(false);
-        startNativeStylePlayback(bpmRef.current, isAccompanimentOnRef.current);
+      if (status.currentSection && (status.currentSection as StyleSection) !== currentSectionRef.current) {
+        setCurrentSectionState(status.currentSection as StyleSection);
+        currentSectionRef.current = status.currentSection as StyleSection;
       }
-
-      // Sincronizar estado en tiempo real del secuenciador (tiempos de compás, transición y finalización)
-      const status = fetchStylePlaybackState();
-      if (status) {
-        setCurrentBeatState(status.currentBeat || 1);
-        setQueuedSectionState(status.queuedSection || '');
-        if (status.currentSection && (status.currentSection as StyleSection) !== currentSectionRef.current) {
-          setCurrentSectionState(status.currentSection as StyleSection);
-          currentSectionRef.current = status.currentSection as StyleSection;
-        }
-        if (isPlayingRef.current && !status.isPlaying) {
-          // Si el estilo terminó (por ejemplo al finalizar ENDING)
-          setIsPlaying(false);
-          isPlayingRef.current = false;
-          setIsPaused(false);
-        }
+      if (status.isPlaying !== isPlayingRef.current) {
+        // Inicio por Sync Start o fin por ENDING
+        isPlayingRef.current = status.isPlaying;
+        setIsPlaying(status.isPlaying);
+        if (!status.isPlaying) setIsPaused(false);
       }
     }, 40);
     return () => clearInterval(interval);
-  }, [isSyncStart]);
+  }, []);
 
   // Sincronizar volumen maestro del estilo a C++
   useEffect(() => {
@@ -158,9 +158,11 @@ export const useArranger = (): UseArrangerReturn => {
 
   // Cargar y transferir patrón rítmico al Secuenciador Nativo C++ (Precisión de Muestra 0.00ms Jitter)
   useEffect(() => {
+    let cancelled = false;
     async function loadPattern() {
       const data = await getStyleData(loadedStyle.id, loadedStyle.filePath);
-      if (!data) return;
+      // Si se eligió otro ritmo mientras se leía este archivo, descartar
+      if (!data || cancelled) return;
 
       resetNativeStyleData();
       setNativeStylePpq(data.ppq || 480);
@@ -179,13 +181,23 @@ export const useArranger = (): UseArrangerReturn => {
         }
       });
 
-      const initialBpm = loadedStyle.defaultBpm || data.defaultBpm || 100;
+      // Ritmos importados: el tempo real viene del archivo (.STY)
+      const styleBpm = loadedStyle.isCustom
+        ? data.defaultBpm || loadedStyle.defaultBpm
+        : loadedStyle.defaultBpm || data.defaultBpm;
+      const initialBpm = pendingBpmRef.current ?? styleBpm ?? 100;
+      pendingBpmRef.current = null;
       setBpmState(initialBpm);
+      bpmRef.current = initialBpm;
       setNativeStyleBpm(initialBpm);
       setNativeStyleSection('MAIN_A');
       setCurrentSectionState('MAIN_A');
+      currentSectionRef.current = 'MAIN_A';
     }
     loadPattern();
+    return () => {
+      cancelled = true;
+    };
   }, [loadedStyle]);
 
   const startStopStyle = useCallback(() => {
@@ -215,7 +227,11 @@ export const useArranger = (): UseArrangerReturn => {
   }, []);
 
   const toggleSyncStart = useCallback(() => {
-    setIsSyncStart((prev) => !prev);
+    setIsSyncStart((prev) => {
+      const next = !prev && !isPlayingRef.current;
+      setNativeSyncStart(next);
+      return next;
+    });
   }, []);
 
   const toggleAccompaniment = useCallback(() => {
@@ -240,17 +256,18 @@ export const useArranger = (): UseArrangerReturn => {
       setQueuedSectionState(section);
       queueNativeStyleSection(section);
     } else {
+      // Detenido: solo INTRO/MAIN se preseleccionan (FILL/ENDING no aplican)
+      if (section.startsWith('FILL_') || section.startsWith('ENDING_')) return;
       setCurrentSectionState(section);
+      currentSectionRef.current = section;
       setNativeStyleSection(section);
     }
   }, []);
 
   const triggerFillIn = useCallback((targetVariation: 'A' | 'B' | 'C' | 'D' = 'A') => {
+    if (!isPlayingRef.current) return;
     const fillSec = (`FILL_${targetVariation}`) as StyleSection;
-    setCurrentSectionState(fillSec);
-    if (isPlayingRef.current) {
-      setNativeStyleSection(fillSec);
-    }
+    setNativeStyleSection(fillSec);
   }, []);
 
   const setSplitPoint = useCallback((note: number) => {
@@ -263,12 +280,25 @@ export const useArranger = (): UseArrangerReturn => {
     setStyleVolumeState(clamped);
   }, []);
 
-  const selectStyle = useCallback(async (preset: StylePreset) => {
+  const selectStyle = useCallback(async (preset: StylePreset, bpmOverride?: number) => {
     if (isPlayingRef.current) {
       stopNativeStylePlayback();
       setIsPlaying(false);
       isPlayingRef.current = false;
     }
+    if (loadedStyleRef.current.id === preset.id) {
+      // Mismo ritmo: no se recarga, aplicar el BPM directamente
+      pendingBpmRef.current = null;
+      if (bpmOverride) {
+        const clamped = Math.min(Math.max(bpmOverride, 40), 240);
+        setBpmState(clamped);
+        bpmRef.current = clamped;
+        setNativeStyleBpm(clamped);
+      }
+      return;
+    }
+    pendingBpmRef.current = bpmOverride ?? null;
+    loadedStyleRef.current = preset;
     setLoadedStyle(preset);
   }, []);
 
