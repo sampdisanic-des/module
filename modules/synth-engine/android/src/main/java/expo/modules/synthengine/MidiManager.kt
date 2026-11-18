@@ -445,7 +445,13 @@ class MidiManager(private val context: Context) {
   }
 
   private fun attachPorts(device: MidiDevice, bleAddress: String?): Boolean {
-    val info = device.info
+    // Android puede entregar el dispositivo sin info si el enlace BLE se cayó durante la apertura
+    val info: MidiDeviceInfo? = device.info
+    if (info == null) {
+      logDiag("MidiManager", "[MIDI] Dispositivo abierto sin info (enlace perdido); se descarta", "ERROR")
+      try { device.close() } catch (e: Exception) {}
+      return false
+    }
     val existing = openDevices[info.id]
     if (existing != null) {
       if (bleAddress == null) { // ya abierto: no duplicar (evita notas dobles)

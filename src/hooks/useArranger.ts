@@ -56,6 +56,8 @@ export interface UseArrangerReturn {
   isAccompanimentOn: boolean;
   styleVolume: number;
   loadedStyle: StylePreset;
+  /** Secciones con eventos en el ritmo cargado (p. ej. 'INTRO_A', 'MAIN_B') */
+  availableSections: StyleSection[];
   availableStyles: StylePreset[];
   selectedCategory: string;
   setSelectedCategory: (cat: string) => void;
@@ -90,6 +92,7 @@ export const useArranger = (): UseArrangerReturn => {
   const [availableStyles, setAvailableStyles] = useState<StylePreset[]>(BUILTIN_STYLES);
   const [loadedStyle, setLoadedStyle] = useState<StylePreset>(BUILTIN_STYLES[0]);
   const [selectedCategory, setSelectedCategory] = useState<string>('ALL');
+  const [availableSections, setAvailableSections] = useState<StyleSection[]>([]);
 
   const currentChordRef = useRef(currentChord);
   currentChordRef.current = currentChord;
@@ -168,6 +171,9 @@ export const useArranger = (): UseArrangerReturn => {
       setNativeStylePpq(data.ppq || 480);
 
       const secKeys = Object.keys(data.sections) as StyleSectionKey[];
+      setAvailableSections(
+        secKeys.filter((k) => (data.sections[k]?.events?.length ?? 0) > 0) as StyleSection[]
+      );
       secKeys.forEach((secKey) => {
         const sec = data.sections[secKey];
         if (sec && sec.events && sec.events.length > 0) {
@@ -338,6 +344,7 @@ export const useArranger = (): UseArrangerReturn => {
     isAccompanimentOn,
     styleVolume,
     loadedStyle,
+    availableSections,
     availableStyles,
     selectedCategory,
     setSelectedCategory,

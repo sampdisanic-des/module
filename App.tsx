@@ -6,13 +6,8 @@ import {
   TouchableOpacity,
   SafeAreaView,
   StatusBar,
-  PanResponder,
-  GestureResponderEvent,
-  PanResponderGestureState,
-  LayoutChangeEvent,
   Modal,
   ScrollView,
-  Alert,
   TextInput,
   BackHandler,
 } from 'react-native';
@@ -28,7 +23,7 @@ import StyleLibraryService from './src/services/styleLibraryService';
 import { setSustainPedal } from './modules/synth-engine/src';
 import { formatAttack, formatDecay, formatSustain, formatRelease } from './src/utils/adsrFormat';
 import { SearchIcon, BluetoothIcon, UsbCableIcon, SignalBarsIcon, RefreshIcon, BackArrowIcon, PlusIcon, EditIcon, TrashIcon, CloseIcon, AssignIcon } from './src/components/Icons';
-import { HorizontalFader, MiniVerticalFader, ChannelVuMeter, ConsoleFader, ConsoleKnob } from './src/components/ConsoleControls';
+import { HorizontalFader, ConsoleFader } from './src/components/ConsoleControls';
 import { VOICE_LIBRARY, VoicePreset, matchStyleCategory } from './src/data/voiceLibrary';
 export type { VoicePreset } from './src/data/voiceLibrary';
 
@@ -130,11 +125,11 @@ export default function App() {
     queuedSection,
     currentBeat,
     isPlaying,
-    isPaused,
     isSyncStart,
     isAccompanimentOn,
     styleVolume,
     loadedStyle,
+    availableSections,
     availableStyles,
     selectedCategory,
     setSelectedCategory,
@@ -143,7 +138,6 @@ export default function App() {
     triggerFillIn,
     setStyleVolume,
     startStopStyle,
-    pauseStyle,
     toggleSyncStart,
     toggleAccompaniment,
     selectStyle,
@@ -153,7 +147,9 @@ export default function App() {
   } = useArranger();
 
   // Estados de Vista Integrada (Sin Modales Flotantes)
-  const [currentView, setCurrentView] = useState<'MAIN' | 'STYLE_LIBRARY' | 'VOICE_LIBRARY'>('MAIN');
+  const [currentView, setCurrentView] = useState<'MAIN' | 'STYLE_LIBRARY' | 'VOICE_LIBRARY' | 'EDIT_VOICE'>('MAIN');
+  // Vista a la que vuelve la librería de voces (se puede abrir desde En vivo o desde Editar voz)
+  const [voiceLibraryReturnView, setVoiceLibraryReturnView] = useState<'MAIN' | 'EDIT_VOICE'>('MAIN');
   const [styleSearchText, setStyleSearchText] = useState<string>('');
   const [voiceSearchText, setVoiceSearchText] = useState<string>('');
   const [renameDialog, setRenameDialog] = useState<{
@@ -175,9 +171,6 @@ export default function App() {
 
   // Transposición Global (Aplica a todos los faders)
   const [transpose, setTranspose] = useState<number>(0);
-
-  // Selección de parámetro activo en el visualizador ADSR
-  const [selectedAdsr, setSelectedAdsr] = useState<'ATTACK' | 'DECAY' | 'SUSTAIN' | 'RELEASE'>('ATTACK');
 
   // Hora y Batería Reales del Dispositivo
   const [currentTimeStr, setCurrentTimeStr] = useState<string>('');
@@ -622,6 +615,10 @@ export default function App() {
         hideAlert();
         return true;
       }
+      if (currentView === 'VOICE_LIBRARY') {
+        setCurrentView(voiceLibraryReturnView);
+        return true;
+      }
       if (currentView !== 'MAIN') {
         setCurrentView('MAIN');
         return true;
@@ -631,7 +628,7 @@ export default function App() {
 
     const subscription = BackHandler.addEventListener('hardwareBackPress', onBackPress);
     return () => subscription.remove();
-  }, [currentView, isBleModalVisible, renameDialog.visible, consoleAlert.visible, stopBleScan]);
+  }, [currentView, voiceLibraryReturnView, isBleModalVisible, renameDialog.visible, consoleAlert.visible, stopBleScan]);
 
   const handleFaderChange = (id: number, newVal: number) => {
     setFaders((prev) =>
@@ -658,63 +655,109 @@ export default function App() {
     next.forEach((f, idx) => setLayerOctave(idx, f.octave));
   };
 
-  const handleStartStop = () => {
-    startStopStyle();
-  };
-
-  // Helper de Perilla Maestra ADSR
-  // Helper de Perilla Maestra ADSR para el Fader Seleccionado
-  const getAdsrCurrentValue = () => {
-    switch (selectedAdsr) {
-      case 'ATTACK': return activeFader.attack;
-      case 'DECAY': return activeFader.delay;
-      case 'SUSTAIN': return activeFader.sustain;
-      case 'RELEASE': return activeFader.release;
-    }
-  };
-
-  const handleAdsrKnobChange = (val: number) => {
+  // Octava de un solo fader (pantalla Editar voz)
+  const shiftFaderOctave = (id: number, delta: number) => {
     setFaders((prev) =>
       prev.map((f) => {
-        if (f.id !== activeFader.id) return f;
-        const updated = { ...f };
-        if (selectedAdsr === 'ATTACK') { updated.attack = val; setLayerParam(f.id - 1, 'attack', val); }
-        if (selectedAdsr === 'DECAY') { updated.delay = val; setLayerParam(f.id - 1, 'decay', val); }
-        if (selectedAdsr === 'SUSTAIN') { updated.sustain = val; setLayerParam(f.id - 1, 'sustain', val); }
-        if (selectedAdsr === 'RELEASE') { updated.release = val; setLayerParam(f.id - 1, 'release', val); }
-        return updated;
+        if (f.id !== id) return f;
+        const octave = Math.max(-3, Math.min(3, f.octave + delta));
+        setLayerOctave(f.id - 1, octave);
+        return { ...f, octave };
       })
     );
   };
 
-  const getAdsrDisplayValue = () => {
-    switch (selectedAdsr) {
-      case 'ATTACK': return formatAttack(activeFader.attack);
-      case 'DECAY': return formatDecay(activeFader.delay);
-      case 'SUSTAIN': return formatSustain(activeFader.sustain);
-      case 'RELEASE': return formatRelease(activeFader.release);
-    }
+  const changeTranspose = (delta: number) => {
+    const newTrp = Math.max(-12, Math.min(12, transpose + delta));
+    setTranspose(newTrp);
+    setGlobalTranspose(newTrp);
   };
 
-  // Coordenadas SVG ADSR para el Fader Seleccionado
+  // Parámetros de sonido del fader seleccionado ('delay' es el decay en el estado)
+  type VoiceParamKey = 'cutoff' | 'resonance' | 'attack' | 'delay' | 'sustain' | 'release';
+  const updateActiveFaderParam = (key: VoiceParamKey, val: number) => {
+    const targetId = activeFader.id;
+    setFaders((prev) => prev.map((f) => (f.id === targetId ? { ...f, [key]: val } : f)));
+    setLayerParam(targetId - 1, key === 'delay' ? 'decay' : key, val);
+  };
+
+  const openVoiceLibrary = (faderId: number, from: 'MAIN' | 'EDIT_VOICE') => {
+    setSelectedFaderId(faderId);
+    setTargetFaderId(faderId);
+    setVoiceLibraryReturnView(from);
+    setCurrentView('VOICE_LIBRARY');
+  };
+
+  // Octava mostrada en En vivo: si todos los faders coinciden se muestra el valor, si no "MIX"
+  const allOctavesEqual = faders.every((f) => f.octave === faders[0].octave);
+  const formatSigned = (n: number) => (n > 0 ? `+${n}` : `${n}`);
+
+  // ----- Arreglista -----
+  // Variación en uso (A-D): la de la sección actual (MAIN_B, FILL_B, INTRO_B -> B)
+  const currentVariation = ((currentSection.split('_')[1] as 'A' | 'B' | 'C' | 'D') || 'A');
+
+  // INTRO / ENDING usan la variación en uso; si el ritmo no la trae, la A
+  const resolveSection = (kind: 'INTRO' | 'ENDING') => {
+    const wanted = `${kind}_${currentVariation}` as typeof currentSection;
+    if (availableSections.includes(wanted)) return wanted;
+    return `${kind}_A` as typeof currentSection;
+  };
+
+  const handleIntroPress = () => {
+    setSection(resolveSection('INTRO'));
+    if (!isPlaying) startStopStyle();
+  };
+
+  const handleEndingPress = () => {
+    if (!isPlaying) return;
+    setSection(resolveSection('ENDING'));
+  };
+
+  const handleFillPress = () => {
+    triggerFillIn(currentVariation);
+  };
+
+  const formatSectionName = (sec: string) => {
+    if (!sec) return '';
+    const [kind, letter] = sec.split('_');
+    return `${kind} ${letter ?? ''}`.trim();
+  };
+
+  const isMidiConnected = !!(connectedBleDevice || connectedUsbDevice);
+  const midiDeviceLabel = connectedBleDevice?.name || connectedUsbDevice?.name || 'SIN TECLADO';
+
+  const handleMidiIndicatorPress = () => {
+    scan();
+    handleOpenBluetoothModal();
+  };
+
+  // Gráfica ADSR del fader seleccionado, dibujada en el tamaño real del recuadro (sin deformar)
+  const [adsrGraphSize, setAdsrGraphSize] = useState<{ w: number; h: number }>({ w: 240, h: 140 });
   const calculateAdsrPoints = () => {
-    const startX = 6;
-    const baseY = 58;
-    const peakY = 6;
-
-    const attackX = startX + 12 + (activeFader.attack / 100) * 45;
-    const decayX = attackX + 20 + (activeFader.delay / 100) * 55;
+    const { w, h } = adsrGraphSize;
+    const pad = 14;
+    const baseY = h - pad;
+    const peakY = pad + 6;
+    const usable = w - pad * 2;
+    // Reparto horizontal: A 0-25%, D 0-25%, meseta fija 20%, R 0-25% del ancho
+    const startX = pad;
+    const attackX = startX + usable * 0.04 + (activeFader.attack / 100) * usable * 0.22;
+    const decayX = attackX + usable * 0.06 + (activeFader.delay / 100) * usable * 0.22;
     const sustainY = baseY - (activeFader.sustain / 100) * (baseY - peakY);
-    const sustainX = decayX + 40;
-    const releaseX = Math.min(sustainX + 15 + (activeFader.release / 100) * 45, 214);
-
+    const sustainX = decayX + usable * 0.2;
+    const releaseX = Math.min(sustainX + usable * 0.04 + (activeFader.release / 100) * usable * 0.22, w - pad);
+    // Etiqueta arriba del punto, o abajo si no cabe
+    const labelY = (y: number) => (y - 9 < 8 ? y + 16 : y - 9);
     return {
       path: `M ${startX} ${baseY} L ${attackX} ${peakY} L ${decayX} ${sustainY} L ${sustainX} ${sustainY} L ${releaseX} ${baseY} Z`,
       strokePath: `M ${startX} ${baseY} L ${attackX} ${peakY} L ${decayX} ${sustainY} L ${sustainX} ${sustainY} L ${releaseX} ${baseY}`,
-      p1: { x: attackX, y: peakY },
-      p2: { x: decayX, y: sustainY },
-      p3: { x: sustainX, y: sustainY },
-      p4: { x: releaseX, y: baseY },
+      midY: (baseY + peakY) / 2,
+      nodes: [
+        { key: 'A', x: attackX, y: peakY, ly: labelY(peakY) },
+        { key: 'D', x: decayX, y: sustainY, ly: labelY(sustainY) },
+        { key: 'S', x: sustainX, y: sustainY, ly: labelY(sustainY) },
+        { key: 'R', x: releaseX, y: baseY, ly: baseY - 9 },
+      ],
     };
   };
 
@@ -724,890 +767,499 @@ export default function App() {
     <SafeAreaView style={styles.safeContainer}>
       <StatusBar barStyle="light-content" hidden={true} />
 
-      {/* HEADER PRINCIPAL */}
-      <View style={styles.header}>
-        {/* IZQUIERDA: Conexión Cable USB OTG y Botón Bluetooth Independiente */}
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
-          {/* 1. Sección Cable Directo USB OTG */}
-          <TouchableOpacity
-            activeOpacity={0.7}
-            delayPressIn={0}
-            delayPressOut={0}
-            style={[
-              styles.midiStatusBoxHeader,
-              connectedUsbDevice && styles.midiStatusBoxHeaderConnected,
-            ]}
-            onPress={() => scan()}
-          >
-            <UsbCableIcon size={12} color={connectedUsbDevice ? '#00E5FF' : '#6B829D'} />
-            <Text style={[styles.midiStatusTextHeader, connectedUsbDevice && styles.midiStatusTextHeaderConnected]}>
-              {connectedUsbDevice
-                ? `${connectedUsbDevice.name.toUpperCase()} USB OK`
-                : 'USB OTG LISTO'}
-            </Text>
-          </TouchableOpacity>
-
-          {/* 2. Botón Bluetooth Independiente */}
-          <TouchableOpacity
-            activeOpacity={0.7}
-            delayPressIn={0}
-            delayPressOut={0}
-            style={[
-              styles.btHeaderBtn,
-              connectedBleDevice && styles.btHeaderBtnConnected,
-              isScanningBle && !connectedBleDevice && styles.btHeaderBtnScanning,
-            ]}
-            onPress={handleOpenBluetoothModal}
-          >
-            <BluetoothIcon
-              size={12}
-              color={connectedBleDevice ? '#00E5FF' : isScanningBle ? '#00E5FF' : '#7187A1'}
-            />
-            <Text
-              style={[
-                styles.btHeaderBtnText,
-                connectedBleDevice && styles.btHeaderBtnTextConnected,
-                isScanningBle && !connectedBleDevice && styles.btHeaderBtnTextScanning,
-              ]}
-            >
-              {connectedBleDevice ? `${connectedBleDevice.name.toUpperCase()} (BLE)` : 'BT MIDI'}
-            </Text>
-            {connectedBleDevice && <View style={styles.btHeaderConnectedDot} />}
-          </TouchableOpacity>
-
-          {/* 3. Pedal de sustain virtual */}
-          <TouchableOpacity
-            activeOpacity={0.7}
-            delayPressIn={0}
-            delayPressOut={0}
-            style={[styles.btHeaderBtn, isSustainOn && styles.sustainHeaderBtnOn]}
-            onPress={toggleSustain}
-          >
-            <Text style={[styles.btHeaderBtnText, isSustainOn && styles.sustainHeaderBtnTextOn]}>
-              {isSustainOn ? 'SUSTAIN ON' : 'SUSTAIN'}
-            </Text>
-          </TouchableOpacity>
-        </View>
-
-        {/* CENTRO PERFECTO: Nombre de la App */}
-        <View style={styles.headerCenterAbsolute}>
-          <Text style={styles.headerTitle}>
-            SYNTH <Text style={styles.headerTitleCyan}>CONNECT</Text>{' '}
-            <Text style={styles.headerTitlePro}>Pro</Text>
+      {/* ================= BARRA SUPERIOR ================= */}
+      <View style={styles.topBar}>
+        {/* Indicador MIDI único: abre la conexión de teclados */}
+        <TouchableOpacity
+          activeOpacity={0.7}
+          delayPressIn={0}
+          delayPressOut={0}
+          style={[styles.topMidiBtn, isMidiConnected && styles.topMidiBtnConnected]}
+          onPress={handleMidiIndicatorPress}
+        >
+          <View style={[styles.topMidiDot, isMidiConnected ? styles.topMidiDotOn : isScanningBle && styles.topMidiDotScanning]} />
+          {connectedUsbDevice && !connectedBleDevice ? (
+            <UsbCableIcon size={12} color="#00E5FF" />
+          ) : (
+            <BluetoothIcon size={12} color={isMidiConnected ? '#00E5FF' : '#6B829D'} />
+          )}
+          <Text style={[styles.topMidiText, isMidiConnected && styles.topMidiTextConnected]} numberOfLines={1}>
+            {midiDeviceLabel.toUpperCase()}
           </Text>
+        </TouchableOpacity>
+
+        {/* Ritmo cargado: abre la librería */}
+        <TouchableOpacity
+          activeOpacity={0.7}
+          delayPressIn={0}
+          delayPressOut={0}
+          style={styles.topStyleBtn}
+          onPress={() => setCurrentView('STYLE_LIBRARY')}
+        >
+          <Text style={styles.topStyleLabel}>RITMO</Text>
+          <Text style={styles.topStyleName} numberOfLines={1}>
+            {loadedStyle.name}
+          </Text>
+          <Text style={styles.topStyleChevron}>›</Text>
+        </TouchableOpacity>
+
+        {/* Tempo */}
+        <View style={styles.topTempoBox}>
+          <TouchableOpacity
+            activeOpacity={0.7}
+            delayPressIn={0}
+            delayPressOut={0}
+            style={styles.topTempoBtn}
+            onPress={() => setBpm(bpm - 1)}
+          >
+            <Text style={styles.topTempoBtnText}>-</Text>
+          </TouchableOpacity>
+          <View style={styles.topTempoValueBox}>
+            <Text style={styles.topTempoValue}>{bpm}</Text>
+            <Text style={styles.topTempoUnit}>BPM</Text>
+          </View>
+          <TouchableOpacity
+            activeOpacity={0.7}
+            delayPressIn={0}
+            delayPressOut={0}
+            style={styles.topTempoBtn}
+            onPress={() => setBpm(bpm + 1)}
+          >
+            <Text style={styles.topTempoBtnText}>+</Text>
+          </TouchableOpacity>
         </View>
 
-        {/* DERECHA: Hora real y Batería real */}
-        <View style={styles.headerRightInfo}>
-          <Text style={styles.sysTimeText}>{currentTimeStr}</Text>
-          <View style={styles.sysDotGreen} />
-          <Text style={styles.sysBattery}>{batteryPercent}%</Text>
+        {/* Beat */}
+        <View style={styles.topBeatRow}>
+          {[1, 2, 3, 4].map((b) => {
+            const lit = isPlaying && currentBeat === b;
+            return (
+              <View
+                key={b}
+                style={[styles.topBeatDot, lit && (b === 1 ? styles.topBeatDotDownbeat : styles.topBeatDotOn)]}
+              />
+            );
+          })}
+        </View>
+
+        {/* Pedal de sustain virtual (el piano no envía CC64) */}
+        <TouchableOpacity
+          activeOpacity={0.7}
+          delayPressIn={0}
+          delayPressOut={0}
+          style={[styles.topSustainBtn, isSustainOn && styles.topSustainBtnOn]}
+          onPress={toggleSustain}
+        >
+          <Text style={[styles.topSustainText, isSustainOn && styles.topSustainTextOn]}>SUSTAIN</Text>
+        </TouchableOpacity>
+
+        <View style={styles.topSysInfo}>
+          <Text style={styles.topSysText}>{currentTimeStr}</Text>
+          <Text style={styles.topSysText}>{batteryPercent}%</Text>
         </View>
       </View>
 
-      {/* ================= VISTA 1: CONSOLA PRINCIPAL ================= */}
+      {/* ================= VISTA 1: EN VIVO ================= */}
       {currentView === 'MAIN' && (
-        <View style={styles.mainWorkspace}>
-          {/* ================= PANEL IZQUIERDO: STYLES (YAMAHA .STY) ================= */}
-          <View style={styles.leftPanel}>
-            <TouchableOpacity
-              activeOpacity={0.7}
-              style={styles.panelHeaderRow}
-              onPress={() => setCurrentView('STYLE_LIBRARY')}
-            >
-              <Text style={styles.panelTitle}>STYLES ({selectedCategory})</Text>
-              <Text style={styles.menuIcon}>≡</Text>
-            </TouchableOpacity>
+        <View style={styles.liveContainer}>
+          <View style={styles.liveWorkspace}>
+            {/* ---------- ZONA IZQUIERDA: ARREGLISTA ---------- */}
+            <View style={styles.arrangerZone}>
+              <View style={styles.chordCard}>
+                <View style={styles.chordMain}>
+                  <Text style={styles.chordLabel}>ACORDE</Text>
+                  <Text
+                    style={[styles.chordText, currentChord === '---' && styles.chordTextIdle]}
+                    numberOfLines={1}
+                    adjustsFontSizeToFit
+                  >
+                    {currentChord}
+                  </Text>
+                </View>
+                <View style={styles.chordSide}>
+                  <Text style={styles.chordLabel}>SECCIÓN</Text>
+                  <Text style={[styles.sectionNowText, isPlaying && styles.sectionNowTextPlaying]}>
+                    {formatSectionName(currentSection)}
+                  </Text>
+                  <Text style={styles.sectionNextText} numberOfLines={1}>
+                    {queuedSection ? `SIGUE: ${formatSectionName(queuedSection)}` : isSyncStart ? 'ESPERANDO NOTA' : ' '}
+                  </Text>
+                  <View style={styles.styleVolumeBox}>
+                    <HorizontalFader label="VOL. RITMO" value={styleVolume} onChange={setStyleVolume} color="#00E5FF" />
+                  </View>
+                </View>
+              </View>
 
-            {/* Selector de Géneros / Categorías de Ritmo */}
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.styleCategoriesBar}>
-              {['ALL', 'LATIN', 'POP', 'ROCK', 'BALLAD', 'CUMBIA', 'DANCE', 'CUSTOM'].map((cat) => {
-                const isActive = selectedCategory === cat;
-                return (
+              {/* MAIN A-D */}
+              <View style={styles.mainSectionRow}>
+                {(['A', 'B', 'C', 'D'] as const).map((letter) => {
+                  const sec = `MAIN_${letter}` as const;
+                  const isCurrent = currentSection === sec;
+                  const isVariation = !isCurrent && currentVariation === letter && !currentSection.startsWith('MAIN_');
+                  const isQueued = queuedSection === sec;
+                  return (
+                    <TouchableOpacity
+                      key={sec}
+                      activeOpacity={0.7}
+                      delayPressIn={0}
+                      delayPressOut={0}
+                      style={[
+                        styles.mainSectionBtn,
+                        isVariation && styles.mainSectionBtnVariation,
+                        isCurrent && styles.mainSectionBtnActive,
+                        isQueued && styles.liveQueued,
+                      ]}
+                      onPress={() => setSection(sec)}
+                    >
+                      <Text style={styles.mainSectionKind}>MAIN</Text>
+                      <Text
+                        style={[
+                          styles.mainSectionLetter,
+                          (isCurrent || isVariation) && styles.mainSectionLetterActive,
+                          isQueued && styles.sectionTextQueued,
+                        ]}
+                      >
+                        {letter}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+
+              {/* INTRO / FILL / ENDING */}
+              <View style={styles.specialSectionRow}>
+                {(() => {
+                  const isCurrent = currentSection.startsWith('INTRO_');
+                  const isQueued = queuedSection.startsWith('INTRO_');
+                  return (
+                    <TouchableOpacity
+                      activeOpacity={0.7}
+                      delayPressIn={0}
+                      delayPressOut={0}
+                      style={[styles.specialBtn, isCurrent && isPlaying && styles.liveIntroBtnActive, isQueued && styles.liveQueued]}
+                      onPress={handleIntroPress}
+                    >
+                      <Text style={[styles.specialBtnText, styles.liveIntroText, isQueued && styles.sectionTextQueued]}>INTRO</Text>
+                    </TouchableOpacity>
+                  );
+                })()}
+
+                <TouchableOpacity
+                  activeOpacity={0.7}
+                  delayPressIn={0}
+                  delayPressOut={0}
+                  style={[
+                    styles.specialBtn,
+                    currentSection.startsWith('FILL_') && styles.fillBtnActive,
+                    !isPlaying && styles.specialBtnDisabled,
+                  ]}
+                  onPress={handleFillPress}
+                >
+                  <Text style={[styles.specialBtnText, styles.fillText]}>FILL</Text>
+                </TouchableOpacity>
+
+                {(() => {
+                  const isCurrent = currentSection.startsWith('ENDING_');
+                  const isQueued = queuedSection.startsWith('ENDING_');
+                  return (
+                    <TouchableOpacity
+                      activeOpacity={0.7}
+                      delayPressIn={0}
+                      delayPressOut={0}
+                      style={[
+                        styles.specialBtn,
+                        isCurrent && isPlaying && styles.liveEndingBtnActive,
+                        isQueued && styles.liveQueued,
+                        !isPlaying && styles.specialBtnDisabled,
+                      ]}
+                      onPress={handleEndingPress}
+                    >
+                      <Text style={[styles.specialBtnText, styles.liveEndingText, isQueued && styles.sectionTextQueued]}>ENDING</Text>
+                    </TouchableOpacity>
+                  );
+                })()}
+              </View>
+
+              {/* SYNC / ACMP / START */}
+              <View style={styles.transportRowLive}>
+                <TouchableOpacity
+                  activeOpacity={0.7}
+                  delayPressIn={0}
+                  delayPressOut={0}
+                  style={[styles.transportBtnLive, isSyncStart && styles.syncBtnOn]}
+                  onPress={toggleSyncStart}
+                >
+                  <View style={[styles.transportLed, isSyncStart && styles.transportLedSync]} />
+                  <Text style={[styles.transportBtnLiveText, isSyncStart && styles.syncTextOn]}>SYNC</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  activeOpacity={0.7}
+                  delayPressIn={0}
+                  delayPressOut={0}
+                  style={[styles.transportBtnLive, isAccompanimentOn && styles.acmpBtnOn]}
+                  onPress={toggleAccompaniment}
+                >
+                  <View style={[styles.transportLed, isAccompanimentOn && styles.transportLedAcmp]} />
+                  <Text style={[styles.transportBtnLiveText, isAccompanimentOn && styles.acmpTextOn]}>ACMP</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  activeOpacity={0.8}
+                  delayPressIn={0}
+                  delayPressOut={0}
+                  style={[styles.startBtnLive, isPlaying && styles.startBtnLivePlaying]}
+                  onPress={startStopStyle}
+                >
+                  <Text style={[styles.startBtnLiveText, isPlaying && styles.startBtnLiveTextPlaying]}>
+                    {isPlaying ? 'STOP' : 'START'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            {/* ---------- ZONA DERECHA: 4 FADERS ---------- */}
+            <View style={styles.mixerZone}>
+              <View style={styles.fadersRowLive}>
+                {faders.map((fader) => (
+                  <ConsoleFader
+                    key={fader.id}
+                    id={fader.id}
+                    name={fader.name}
+                    value={fader.value}
+                    solo={fader.solo}
+                    mute={fader.mute}
+                    octave={fader.octave}
+                    isSelected={selectedFaderId === fader.id}
+                    onSelect={setSelectedFaderId}
+                    onChange={handleFaderChange}
+                    onToggleSolo={toggleSolo}
+                    onToggleMute={toggleMute}
+                    onOpenVoice={(id) => openVoiceLibrary(id, 'MAIN')}
+                  />
+                ))}
+              </View>
+
+              <View style={styles.mixerBottomRow}>
+                <View style={styles.stepperBlock}>
+                  <Text style={styles.stepperLabel}>OCTAVA</Text>
                   <TouchableOpacity
-                    key={cat}
                     activeOpacity={0.7}
                     delayPressIn={0}
                     delayPressOut={0}
-                    style={[styles.styleCategoryPillMini, isActive && styles.styleCategoryPillMiniActive]}
-                    onPress={() => setSelectedCategory(cat)}
+                    style={styles.stepperBtn}
+                    onPress={() => shiftAllOctaves(-1)}
                   >
-                    <Text style={[styles.styleCategoryPillMiniText, isActive && styles.styleCategoryPillMiniTextActive]}>
-                      {cat}
+                    <Text style={styles.stepperBtnText}>-</Text>
+                  </TouchableOpacity>
+                  <Text style={styles.stepperValue}>{allOctavesEqual ? formatSigned(faders[0].octave) : 'MIX'}</Text>
+                  <TouchableOpacity
+                    activeOpacity={0.7}
+                    delayPressIn={0}
+                    delayPressOut={0}
+                    style={styles.stepperBtn}
+                    onPress={() => shiftAllOctaves(1)}
+                  >
+                    <Text style={styles.stepperBtnText}>+</Text>
+                  </TouchableOpacity>
+                </View>
+
+                <View style={styles.stepperBlock}>
+                  <Text style={styles.stepperLabel}>TRANSP.</Text>
+                  <TouchableOpacity
+                    activeOpacity={0.7}
+                    delayPressIn={0}
+                    delayPressOut={0}
+                    style={styles.stepperBtn}
+                    onPress={() => changeTranspose(-1)}
+                  >
+                    <Text style={styles.stepperBtnText}>-</Text>
+                  </TouchableOpacity>
+                  <Text style={[styles.stepperValue, transpose !== 0 && styles.stepperValueChanged]}>{formatSigned(transpose)}</Text>
+                  <TouchableOpacity
+                    activeOpacity={0.7}
+                    delayPressIn={0}
+                    delayPressOut={0}
+                    style={styles.stepperBtn}
+                    onPress={() => changeTranspose(1)}
+                  >
+                    <Text style={styles.stepperBtnText}>+</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </View>
+          </View>
+
+          {/* ---------- FILA INFERIOR: BANCOS + EDITAR ---------- */}
+          <View style={styles.bankBar}>
+            <View style={styles.bankBarLabelBox}>
+              <Text style={styles.bankBarLabel}>BANCOS</Text>
+              <Text style={styles.bankBarHint}>MANTENER 1 s = GUARDAR</Text>
+            </View>
+            {[1, 2, 3, 4, 5, 6, 7, 8].map((bankNum) => {
+              const isActive = activeBank === bankNum;
+              const hasPreset = !!memoryBanksCatalog[bankNum];
+              return (
+                <TouchableOpacity
+                  key={bankNum}
+                  activeOpacity={0.7}
+                  delayPressIn={0}
+                  delayPressOut={0}
+                  style={[styles.bankBtn, hasPreset && styles.bankBtnSaved, isActive && styles.bankBtnActive]}
+                  onPressIn={() => handleBankPressIn(bankNum)}
+                  onPressOut={() => handleBankPressOut(bankNum)}
+                >
+                  <Text style={[styles.bankBtnNum, hasPreset && styles.bankBtnNumSaved, isActive && styles.bankBtnNumActive]}>
+                    {bankNum}
+                  </Text>
+                  <View style={[styles.bankBtnDot, hasPreset && styles.bankBtnDotSaved, isActive && styles.bankBtnDotActive]} />
+                </TouchableOpacity>
+              );
+            })}
+            <TouchableOpacity
+              activeOpacity={0.7}
+              delayPressIn={0}
+              delayPressOut={0}
+              style={styles.editVoiceBtn}
+              onPress={() => setCurrentView('EDIT_VOICE')}
+            >
+              <EditIcon size={13} color="#000000" />
+              <Text style={styles.editVoiceBtnText}>EDITAR F{activeFader.id}</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
+
+      {/* ================= VISTA: EDITAR VOZ ================= */}
+      {currentView === 'EDIT_VOICE' && (
+        <View style={styles.editContainer}>
+          <View style={styles.libNavBar}>
+            <TouchableOpacity
+              activeOpacity={0.7}
+              delayPressIn={0}
+              delayPressOut={0}
+              style={styles.libBackIconBtn}
+              onPress={() => setCurrentView('MAIN')}
+            >
+              <BackArrowIcon size={16} color="#00E5FF" />
+            </TouchableOpacity>
+
+            <View style={styles.libTitleContainer}>
+              <Text style={styles.libTitleMain}>EDITAR VOZ</Text>
+              <Text style={styles.libSubtitle}>Los cambios se aplican al fader seleccionado y se guardan con los bancos.</Text>
+            </View>
+
+            <View style={styles.editFaderTabs}>
+              {faders.map((f) => {
+                const isSel = f.id === selectedFaderId;
+                return (
+                  <TouchableOpacity
+                    key={f.id}
+                    activeOpacity={0.7}
+                    delayPressIn={0}
+                    delayPressOut={0}
+                    style={[styles.editFaderTab, isSel && styles.editFaderTabActive]}
+                    onPress={() => setSelectedFaderId(f.id)}
+                  >
+                    <Text style={[styles.editFaderTabId, isSel && styles.editFaderTabIdActive]}>F{f.id}</Text>
+                    <Text style={[styles.editFaderTabName, isSel && styles.editFaderTabNameActive]} numberOfLines={1}>
+                      {f.name}
                     </Text>
                   </TouchableOpacity>
                 );
               })}
-            </ScrollView>
-
-            {/* Lista de Estilos filtrados por Género con Scroll Vertical */}
-            <View style={styles.stylesListContainer}>
-              <ScrollView style={styles.stylesListScroll} nestedScrollEnabled={true} showsVerticalScrollIndicator={false}>
-                {(() => {
-                  const filtered = availableStyles.filter((st) => matchStyleCategory(st.category, st.name, selectedCategory));
-                  if (filtered.length === 0) {
-                    return (
-                      <View style={styles.styleItemRowEmpty}>
-                        <Text style={styles.styleItemTextEmpty}>- NO HAY RITMOS -</Text>
-                      </View>
-                    );
-                  }
-                  return filtered.map((st) => {
-                    const isSelected = st.id === loadedStyle.id;
-                    return (
-                      <TouchableOpacity
-                        key={st.id}
-                        activeOpacity={0.7}
-                        delayPressIn={0}
-                        delayPressOut={0}
-                        style={[styles.styleItemRow, isSelected && styles.styleItemRowSelected]}
-                        onPress={() => selectStyle(st)}
-                      >
-                        <Text style={[styles.styleItemText, isSelected && styles.styleItemTextSelected]} numberOfLines={1}>
-                          {st.name}
-                        </Text>
-                      </TouchableOpacity>
-                    );
-                  });
-                })()}
-              </ScrollView>
             </View>
+          </View>
 
-            {/* Style Volume Slider Fader 3D */}
-            <HorizontalFader
-              label="STYLE VOLUME"
-              value={styleVolume}
-              onChange={setStyleVolume}
-              color="#00E5FF"
-            />
-
-            {/* Matriz Hardware de Secciones: 4 Columnas x 2 Filas con Indicadores de 4 Tiempos */}
-            <View style={styles.styleSectionsMatrix}>
-              {/* Columna 1: INTRO A / INTRO B */}
-              <View style={styles.sectionCol}>
-                {(() => {
-                  const isCurrent = currentSection === 'INTRO_A';
-                  const isQueued = queuedSection === 'INTRO_A';
-                  return (
-                    <TouchableOpacity
-                      activeOpacity={0.7}
-                      delayPressIn={0}
-                      delayPressOut={0}
-                      style={[
-                        styles.sectionBtnRect,
-                        styles.introBtn,
-                        isCurrent && styles.introBtnActive,
-                        isQueued && styles.sectionBtnQueued,
-                      ]}
-                      onPress={() => {
-                        setSection('INTRO_A');
-                        if (!isPlaying) startStopStyle();
-                      }}
-                    >
-                      <Text style={[styles.sectionBtnText, styles.introText, isCurrent && styles.introTextActive, isQueued && styles.queuedText]}>
-                        INTRO A
-                      </Text>
-                      <View style={styles.beatIndicatorRow}>
-                        {[1, 2, 3, 4].map((b) => (
-                          <View
-                            key={b}
-                            style={[
-                              styles.beatDot,
-                              isPlaying && isCurrent && currentBeat === b && styles.beatDotIntroActive,
-                            ]}
-                          />
-                        ))}
-                      </View>
-                    </TouchableOpacity>
-                  );
-                })()}
-
-                {(() => {
-                  const isCurrent = currentSection === 'INTRO_B';
-                  const isQueued = queuedSection === 'INTRO_B';
-                  return (
-                    <TouchableOpacity
-                      activeOpacity={0.7}
-                      delayPressIn={0}
-                      delayPressOut={0}
-                      style={[
-                        styles.sectionBtnRect,
-                        styles.introBtn,
-                        isCurrent && styles.introBtnActive,
-                        isQueued && styles.sectionBtnQueued,
-                      ]}
-                      onPress={() => {
-                        setSection('INTRO_B');
-                        if (!isPlaying) startStopStyle();
-                      }}
-                    >
-                      <Text style={[styles.sectionBtnText, styles.introText, isCurrent && styles.introTextActive, isQueued && styles.queuedText]}>
-                        INTRO B
-                      </Text>
-                      <View style={styles.beatIndicatorRow}>
-                        {[1, 2, 3, 4].map((b) => (
-                          <View
-                            key={b}
-                            style={[
-                              styles.beatDot,
-                              isPlaying && isCurrent && currentBeat === b && styles.beatDotIntroActive,
-                            ]}
-                          />
-                        ))}
-                      </View>
-                    </TouchableOpacity>
-                  );
-                })()}
-              </View>
-
-              {/* Columna 2: MAIN A / MAIN B */}
-              <View style={styles.sectionCol}>
-                {(() => {
-                  const isCurrent = currentSection === 'MAIN_A';
-                  const isQueued = queuedSection === 'MAIN_A';
-                  return (
-                    <TouchableOpacity
-                      activeOpacity={0.7}
-                      delayPressIn={0}
-                      delayPressOut={0}
-                      style={[
-                        styles.sectionBtnRect,
-                        styles.mainBtn,
-                        isCurrent && styles.mainBtnActive,
-                        isQueued && styles.sectionBtnQueued,
-                      ]}
-                      onPress={() => setSection('MAIN_A')}
-                    >
-                      <Text style={[styles.sectionBtnText, styles.mainText, isCurrent && styles.mainTextActive, isQueued && styles.queuedText]}>
-                        MAIN A
-                      </Text>
-                      <View style={styles.beatIndicatorRow}>
-                        {[1, 2, 3, 4].map((b) => (
-                          <View
-                            key={b}
-                            style={[
-                              styles.beatDot,
-                              isPlaying && isCurrent && currentBeat === b && styles.beatDotMainActive,
-                            ]}
-                          />
-                        ))}
-                      </View>
-                    </TouchableOpacity>
-                  );
-                })()}
-
-                {(() => {
-                  const isCurrent = currentSection === 'MAIN_B';
-                  const isQueued = queuedSection === 'MAIN_B';
-                  return (
-                    <TouchableOpacity
-                      activeOpacity={0.7}
-                      delayPressIn={0}
-                      delayPressOut={0}
-                      style={[
-                        styles.sectionBtnRect,
-                        styles.mainBtn,
-                        isCurrent && styles.mainBtnActive,
-                        isQueued && styles.sectionBtnQueued,
-                      ]}
-                      onPress={() => setSection('MAIN_B')}
-                    >
-                      <Text style={[styles.sectionBtnText, styles.mainText, isCurrent && styles.mainTextActive, isQueued && styles.queuedText]}>
-                        MAIN B
-                      </Text>
-                      <View style={styles.beatIndicatorRow}>
-                        {[1, 2, 3, 4].map((b) => (
-                          <View
-                            key={b}
-                            style={[
-                              styles.beatDot,
-                              isPlaying && isCurrent && currentBeat === b && styles.beatDotMainActive,
-                            ]}
-                          />
-                        ))}
-                      </View>
-                    </TouchableOpacity>
-                  );
-                })()}
-              </View>
-
-              {/* Columna 3: MAIN C / MAIN D */}
-              <View style={styles.sectionCol}>
-                {(() => {
-                  const isCurrent = currentSection === 'MAIN_C';
-                  const isQueued = queuedSection === 'MAIN_C';
-                  return (
-                    <TouchableOpacity
-                      activeOpacity={0.7}
-                      delayPressIn={0}
-                      delayPressOut={0}
-                      style={[
-                        styles.sectionBtnRect,
-                        styles.mainBtn,
-                        isCurrent && styles.mainBtnActive,
-                        isQueued && styles.sectionBtnQueued,
-                      ]}
-                      onPress={() => setSection('MAIN_C')}
-                    >
-                      <Text style={[styles.sectionBtnText, styles.mainText, isCurrent && styles.mainTextActive, isQueued && styles.queuedText]}>
-                        MAIN C
-                      </Text>
-                      <View style={styles.beatIndicatorRow}>
-                        {[1, 2, 3, 4].map((b) => (
-                          <View
-                            key={b}
-                            style={[
-                              styles.beatDot,
-                              isPlaying && isCurrent && currentBeat === b && styles.beatDotMainActive,
-                            ]}
-                          />
-                        ))}
-                      </View>
-                    </TouchableOpacity>
-                  );
-                })()}
-
-                {(() => {
-                  const isCurrent = currentSection === 'MAIN_D';
-                  const isQueued = queuedSection === 'MAIN_D';
-                  return (
-                    <TouchableOpacity
-                      activeOpacity={0.7}
-                      delayPressIn={0}
-                      delayPressOut={0}
-                      style={[
-                        styles.sectionBtnRect,
-                        styles.mainBtn,
-                        isCurrent && styles.mainBtnActive,
-                        isQueued && styles.sectionBtnQueued,
-                      ]}
-                      onPress={() => setSection('MAIN_D')}
-                    >
-                      <Text style={[styles.sectionBtnText, styles.mainText, isCurrent && styles.mainTextActive, isQueued && styles.queuedText]}>
-                        MAIN D
-                      </Text>
-                      <View style={styles.beatIndicatorRow}>
-                        {[1, 2, 3, 4].map((b) => (
-                          <View
-                            key={b}
-                            style={[
-                              styles.beatDot,
-                              isPlaying && isCurrent && currentBeat === b && styles.beatDotMainActive,
-                            ]}
-                          />
-                        ))}
-                      </View>
-                    </TouchableOpacity>
-                  );
-                })()}
-              </View>
-
-              {/* Columna 4: ENDING A / ENDING B */}
-              <View style={styles.sectionCol}>
-                {(() => {
-                  const isCurrent = currentSection === 'ENDING_A';
-                  const isQueued = queuedSection === 'ENDING_A';
-                  return (
-                    <TouchableOpacity
-                      activeOpacity={0.7}
-                      delayPressIn={0}
-                      delayPressOut={0}
-                      style={[
-                        styles.sectionBtnRect,
-                        styles.endingBtn,
-                        isCurrent && styles.endingBtnActive,
-                        isQueued && styles.sectionBtnQueued,
-                      ]}
-                      onPress={() => setSection('ENDING_A')}
-                    >
-                      <Text style={[styles.sectionBtnText, styles.endingText, isCurrent && styles.endingTextActive, isQueued && styles.queuedText]}>
-                        ENDING A
-                      </Text>
-                      <View style={styles.beatIndicatorRow}>
-                        {[1, 2, 3, 4].map((b) => (
-                          <View
-                            key={b}
-                            style={[
-                              styles.beatDot,
-                              isPlaying && isCurrent && currentBeat === b && styles.beatDotEndingActive,
-                            ]}
-                          />
-                        ))}
-                      </View>
-                    </TouchableOpacity>
-                  );
-                })()}
-
-                {(() => {
-                  const isCurrent = currentSection === 'ENDING_B';
-                  const isQueued = queuedSection === 'ENDING_B';
-                  return (
-                    <TouchableOpacity
-                      activeOpacity={0.7}
-                      delayPressIn={0}
-                      delayPressOut={0}
-                      style={[
-                        styles.sectionBtnRect,
-                        styles.endingBtn,
-                        isCurrent && styles.endingBtnActive,
-                        isQueued && styles.sectionBtnQueued,
-                      ]}
-                      onPress={() => setSection('ENDING_B')}
-                    >
-                      <Text style={[styles.sectionBtnText, styles.endingText, isCurrent && styles.endingTextActive, isQueued && styles.queuedText]}>
-                        ENDING B
-                      </Text>
-                      <View style={styles.beatIndicatorRow}>
-                        {[1, 2, 3, 4].map((b) => (
-                          <View
-                            key={b}
-                            style={[
-                              styles.beatDot,
-                              isPlaying && isCurrent && currentBeat === b && styles.beatDotEndingActive,
-                            ]}
-                          />
-                        ))}
-                      </View>
-                    </TouchableOpacity>
-                  );
-                })()}
-              </View>
-            </View>
-
-            {/* Barra de Transporte Inferior (Diseño Rectangular Profesional) */}
-            <View style={styles.transportRow}>
-              {/* SYNC START */}
+          <View style={styles.editBody}>
+            {/* Columna 1: voz, gráfica y octava */}
+            <View style={styles.editCard}>
+              <Text style={styles.editCardTitle}>VOZ F{activeFader.id}</Text>
               <TouchableOpacity
-                style={[styles.transportBtnRect, isSyncStart && styles.syncStartBtnActive]}
                 activeOpacity={0.7}
                 delayPressIn={0}
                 delayPressOut={0}
-                onPress={toggleSyncStart}
+                style={styles.editVoiceNameBox}
+                onPress={() => openVoiceLibrary(activeFader.id, 'EDIT_VOICE')}
               >
-                <Text style={[styles.transportBtnTitle, isSyncStart && styles.syncStartTitleActive]}>SYNC</Text>
-                <Text style={[styles.transportBtnSub, isSyncStart && styles.syncStartSubActive]}>START</Text>
-              </TouchableOpacity>
-
-              {/* ACMP ON/OFF */}
-              <TouchableOpacity
-                style={[styles.transportBtnRect, isAccompanimentOn && styles.acmpBtnActive]}
-                activeOpacity={0.7}
-                delayPressIn={0}
-                delayPressOut={0}
-                onPress={toggleAccompaniment}
-              >
-                <Text style={[styles.transportBtnTitle, isAccompanimentOn && styles.acmpTitleActive]}>ACMP</Text>
-                <Text style={[styles.transportBtnSub, isAccompanimentOn && styles.acmpSubActive]}>{isAccompanimentOn ? 'ON' : 'OFF'}</Text>
-              </TouchableOpacity>
-
-              {/* START / STOP */}
-              <TouchableOpacity
-                activeOpacity={0.8}
-                delayPressIn={0}
-                delayPressOut={0}
-                style={[styles.startStopRectBtn, isPlaying && styles.startStopRectBtnActive]}
-                onPress={startStopStyle}
-              >
-                <Text style={[styles.startStopRectTitle, isPlaying && styles.startStopRectTitleActive]}>
-                  {isPlaying ? 'STOP' : 'START / STOP'}
+                <Text style={styles.editVoiceName} numberOfLines={2}>
+                  {activeFader.name}
                 </Text>
+                <Text style={styles.editVoiceChange}>CAMBIAR ›</Text>
               </TouchableOpacity>
 
-              {/* FILL IN */}
-              <TouchableOpacity
-                style={styles.transportBtnRect}
-                activeOpacity={0.7}
-                delayPressIn={0}
-                delayPressOut={0}
-                onPress={() => {
-                  const varLetter = (currentSection.split('_')[1] as 'A' | 'B' | 'C' | 'D') || 'A';
-                  triggerFillIn(varLetter);
+              <View
+                style={styles.editGraphBox}
+                onLayout={(e) => {
+                  const { width, height } = e.nativeEvent.layout;
+                  if (width > 0 && height > 0) setAdsrGraphSize({ w: width, h: height });
                 }}
               >
-                <Text style={styles.transportBtnTitle}>FILL</Text>
-                <Text style={styles.transportBtnSub}>IN</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-
-          {/* ================= PANEL CENTRAL: PERFORMANCE LAYERS ================= */}
-          <View style={styles.centerPanel}>
-            <View style={styles.panelHeaderRow}>
-              <Text style={styles.panelTitle}>PERFORMANCE LAYERS</Text>
-              <TouchableOpacity
-                activeOpacity={0.7}
-                delayPressIn={0}
-                delayPressOut={0}
-                onPress={() => setCurrentView('VOICE_LIBRARY')}
-              >
-                <Text style={styles.menuIcon}>≡</Text>
-              </TouchableOpacity>
-            </View>
-
-            <View style={styles.fadersGridSeparated}>
-              {faders.map((fader) => (
-                <ConsoleFader
-                  key={fader.id}
-                  id={fader.id}
-                  name={fader.name}
-                  value={fader.value}
-                  solo={fader.solo}
-                  mute={fader.mute}
-                  isSelected={selectedFaderId === fader.id}
-                  isPlaying={isPlaying}
-                  onSelect={setSelectedFaderId}
-                  onChange={handleFaderChange}
-                  onToggleSolo={toggleSolo}
-                  onToggleMute={toggleMute}
-                />
-              ))}
-            </View>
-
-            {/* OCTAVE (Por Fader Seleccionado) & TRANSPOSE (Global para Todos los Faders) */}
-            <View style={styles.centerBottomControlRow}>
-              <View style={styles.octaveTrpBlock}>
-                <Text style={styles.octaveTrpTitle}>OCTAVE</Text>
-                <View style={styles.octaveTrpRowInner}>
-                  <TouchableOpacity
-                    activeOpacity={0.7}
-                    delayPressIn={0}
-                    delayPressOut={0}
-                    style={styles.octaveMinusBtn}
-                    onPress={() => shiftAllOctaves(-1)}
-                  >
-                    <Text style={styles.octaveBtnSymbol}>-</Text>
-                  </TouchableOpacity>
-
-                  <Text style={styles.octaveValueText}>
-                    {activeFader.octave > 0 ? `+${activeFader.octave}` : activeFader.octave}
-                  </Text>
-
-                  <TouchableOpacity
-                    activeOpacity={0.7}
-                    delayPressIn={0}
-                    delayPressOut={0}
-                    style={styles.octavePlusBtn}
-                    onPress={() => shiftAllOctaves(1)}
-                  >
-                    <Text style={styles.octaveBtnSymbol}>+</Text>
-                  </TouchableOpacity>
-                </View>
+                <Svg width={adsrGraphSize.w} height={adsrGraphSize.h}>
+                  <Defs>
+                    <LinearGradient id="adsrGrad" x1="0" y1="0" x2="0" y2="1">
+                      <Stop offset="0" stopColor="#FF9100" stopOpacity="0.7" />
+                      <Stop offset="1" stopColor="#FF9100" stopOpacity="0.05" />
+                    </LinearGradient>
+                  </Defs>
+                  <Line x1="0" y1={adsrCoords.midY} x2={adsrGraphSize.w} y2={adsrCoords.midY} stroke="#121C2B" strokeWidth="1" strokeDasharray="4 4" />
+                  <Path d={adsrCoords.path} fill="url(#adsrGrad)" />
+                  <Path d={adsrCoords.strokePath} stroke="#FF9100" strokeWidth="2.5" fill="none" />
+                  {adsrCoords.nodes.map((n) => (
+                    <React.Fragment key={n.key}>
+                      <Circle cx={n.x} cy={n.y} r="5" fill="#FFFFFF" stroke="#FF9100" strokeWidth="2" />
+                      <SvgText x={n.x} y={n.ly} fill="#8A9EB8" fontSize="11" fontWeight="bold" textAnchor="middle">
+                        {n.key}
+                      </SvgText>
+                    </React.Fragment>
+                  ))}
+                </Svg>
               </View>
 
-              <View style={styles.octaveTrpBlock}>
-                <Text style={styles.octaveTrpTitle}>TRANSPOSE</Text>
-                <View style={styles.octaveTrpRowInner}>
-                  <TouchableOpacity
-                    activeOpacity={0.7}
-                    delayPressIn={0}
-                    delayPressOut={0}
-                    style={styles.octaveMinusBtn}
-                    onPress={() => {
-                      const newTrp = Math.max(transpose - 1, -12);
-                      setTranspose(newTrp);
-                      setGlobalTranspose(newTrp);
-                    }}
-                  >
-                    <Text style={styles.octaveBtnSymbol}>-</Text>
-                  </TouchableOpacity>
-
-                  <Text style={styles.octaveValueText}>
-                    {transpose > 0 ? `+${transpose}` : transpose}
-                  </Text>
-
-                  <TouchableOpacity
-                    activeOpacity={0.7}
-                    delayPressIn={0}
-                    delayPressOut={0}
-                    style={styles.octavePlusBtn}
-                    onPress={() => {
-                      const newTrp = Math.min(transpose + 1, 12);
-                      setTranspose(newTrp);
-                      setGlobalTranspose(newTrp);
-                    }}
-                  >
-                    <Text style={styles.octaveBtnSymbol}>+</Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-            </View>
-          </View>
-
-          {/* ================= PANEL DERECHO ================= */}
-          <View style={styles.rightPanel}>
-            <View style={styles.rightTopRow}>
-              {/* COLUMNA IZQUIERDA: ENVELOPE + TEMPO RELLENANDO ESPACIO + RESONANCE DEBAJO DE TEMPO */}
-              <View style={styles.adsrAndTempoLeftCol}>
-                {/* Tarjeta Consola ADSR con Solo Cutoff */}
-                <View style={styles.adsrCardContainerCompact}>
-                  <Text style={styles.panelTitle}>ENVELOPE (ADSR - F{activeFader.id})</Text>
-
-                  {/* 1. HASTA ARRIBA: Gráfica SVG */}
-                  <View style={styles.adsrGraphCardBox}>
-                    <Svg height="60" width="100%" viewBox="0 0 220 70">
-                      <Defs>
-                        <LinearGradient id="orangeGrad" x1="0" y1="0" x2="0" y2="1">
-                          <Stop offset="0" stopColor="#FF9100" stopOpacity="0.8" />
-                          <Stop offset="1" stopColor="#FF9100" stopOpacity="0.05" />
-                        </LinearGradient>
-                      </Defs>
-
-                      <Line x1="0" y1="35" x2="220" y2="35" stroke="#121C2B" strokeWidth="1" strokeDasharray="4 4" />
-                      <Line x1="110" y1="0" x2="110" y2="70" stroke="#121C2B" strokeWidth="1" strokeDasharray="4 4" />
-
-                      <Path d={adsrCoords.path} fill="url(#orangeGrad)" />
-                      <Path d={adsrCoords.strokePath} stroke="#FF9100" strokeWidth="2.5" fill="none" />
-
-                      {/* Nodos A, D, S, R */}
-                      <Circle
-                        cx={adsrCoords.p1.x}
-                        cy={adsrCoords.p1.y}
-                        r={selectedAdsr === 'ATTACK' ? '5.5' : '4'}
-                        fill={selectedAdsr === 'ATTACK' ? '#FF9100' : '#FFFFFF'}
-                        stroke="#FF9100"
-                        strokeWidth="2"
-                      />
-                      <SvgText
-                        x={adsrCoords.p1.x}
-                        y={adsrCoords.p1.y + (selectedAdsr === 'ATTACK' ? 14 : 12)}
-                        fill={selectedAdsr === 'ATTACK' ? '#FF9100' : '#8A9EB8'}
-                        fontSize="8"
-                        fontWeight="bold"
-                        textAnchor="middle"
-                      >
-                        A
-                      </SvgText>
-
-                      <Circle
-                        cx={adsrCoords.p2.x}
-                        cy={adsrCoords.p2.y}
-                        r={selectedAdsr === 'DECAY' ? '5.5' : '4'}
-                        fill={selectedAdsr === 'DECAY' ? '#FF9100' : '#FFFFFF'}
-                        stroke="#FF9100"
-                        strokeWidth="2"
-                      />
-                      <SvgText
-                        x={adsrCoords.p2.x}
-                        y={adsrCoords.p2.y - 6}
-                        fill={selectedAdsr === 'DECAY' ? '#FF9100' : '#8A9EB8'}
-                        fontSize="8"
-                        fontWeight="bold"
-                        textAnchor="middle"
-                      >
-                        D
-                      </SvgText>
-
-                      <Circle
-                        cx={adsrCoords.p3.x}
-                        cy={adsrCoords.p3.y}
-                        r={selectedAdsr === 'SUSTAIN' ? '5.5' : '4'}
-                        fill={selectedAdsr === 'SUSTAIN' ? '#FF9100' : '#FFFFFF'}
-                        stroke="#FF9100"
-                        strokeWidth="2"
-                      />
-                      <SvgText
-                        x={adsrCoords.p3.x}
-                        y={adsrCoords.p3.y - 6}
-                        fill={selectedAdsr === 'SUSTAIN' ? '#FF9100' : '#8A9EB8'}
-                        fontSize="8"
-                        fontWeight="bold"
-                        textAnchor="middle"
-                      >
-                        S
-                      </SvgText>
-
-                      <Circle
-                        cx={adsrCoords.p4.x}
-                        cy={adsrCoords.p4.y}
-                        r={selectedAdsr === 'RELEASE' ? '5.5' : '4'}
-                        fill={selectedAdsr === 'RELEASE' ? '#FF9100' : '#FFFFFF'}
-                        stroke="#FF9100"
-                        strokeWidth="2"
-                      />
-                      <SvgText
-                        x={adsrCoords.p4.x}
-                        y={adsrCoords.p4.y - 6}
-                        fill={selectedAdsr === 'RELEASE' ? '#FF9100' : '#8A9EB8'}
-                        fontSize="8"
-                        fontWeight="bold"
-                        textAnchor="middle"
-                      >
-                        R
-                      </SvgText>
-                    </Svg>
-                  </View>
-
-                  {/* 2. FILA MEDIA: PERILLA ADSR (IZQ) + FADER DE CUTOFF (DER) */}
-                  <View style={styles.adsrMiddleRowWithFilters}>
-                    <View style={styles.adsrKnobLeftColSingle}>
-                      <ConsoleKnob
-                        label={selectedAdsr}
-                        value={getAdsrCurrentValue()}
-                        displayValue={getAdsrDisplayValue()}
-                        size={54}
-                        color="#FF9100"
-                        onChange={handleAdsrKnobChange}
-                      />
-                    </View>
-
-                    {/* Fader de CUTOFF a la derecha */}
-                    <View style={styles.cutoffSingleCol}>
-                      <MiniVerticalFader
-                        label="CUTOFF"
-                        value={activeFader.cutoff}
-                        color="#00E5FF"
-                        onChange={(val) => {
-                          setFaders((prev) =>
-                            prev.map((f) => (f.id === activeFader.id ? { ...f, cutoff: val } : f))
-                          );
-                          setLayerParam(activeFader.id - 1, 'cutoff', val);
-                        }}
-                      />
-                    </View>
-                  </View>
-
-                  {/* 3. ABAJO: 4 Botones ADSR (ATTACK, DECAY, SUSTAIN, RELEASE) */}
-                  <View style={styles.adsrFourBtnsRow}>
-                    {(['ATTACK', 'DECAY', 'SUSTAIN', 'RELEASE'] as const).map((param) => {
-                      const isSel = selectedAdsr === param;
-                      let displayVal = '';
-                      if (param === 'ATTACK') displayVal = formatAttack(activeFader.attack);
-                      if (param === 'DECAY') displayVal = formatDecay(activeFader.delay);
-                      if (param === 'SUSTAIN') displayVal = formatSustain(activeFader.sustain);
-                      if (param === 'RELEASE') displayVal = formatRelease(activeFader.release);
-
-                      return (
-                        <TouchableOpacity
-                          key={param}
-                          activeOpacity={0.7}
-                          delayPressIn={0}
-                          delayPressOut={0}
-                          style={[styles.adsrFourBtnPill, isSel && styles.adsrFourBtnPillActive]}
-                          onPress={() => setSelectedAdsr(param)}
-                        >
-                          <Text style={[styles.adsrFourBtnText, isSel && styles.adsrFourBtnTextActive]}>
-                            {param}
-                          </Text>
-                          <Text style={[styles.adsrFourBtnVal, isSel && styles.adsrFourBtnValActive]}>
-                            {displayVal}
-                          </Text>
-                        </TouchableOpacity>
-                      );
-                    })}
-                  </View>
-                </View>
-
-                {/* TEMPO CONTROL SUBIDO PARA RELLENAR ESPACIO EN BLANCO DIRECTAMENTE BAJO ADSR */}
-                <View style={styles.tempoCardShiftedUpDirect}>
-                  <Text style={styles.tempoBlockTitleBig}>TEMPO CONTROL</Text>
-                  <View style={styles.tempoRowInnerGiant}>
-                    <TouchableOpacity
-                      activeOpacity={0.7}
-                      delayPressIn={0}
-                      delayPressOut={0}
-                      style={styles.tempoMinusBtnGiant}
-                      onPress={() => setBpm(Math.max(bpm - 1, 30))}
-                    >
-                      <Text style={styles.tempoBtnSymbolGiant}>-</Text>
-                    </TouchableOpacity>
-
-                    <Text style={styles.tempoBigNumGiant}>
-                      {bpm} <Text style={styles.bpmSubTextGiant}>BPM</Text>
-                    </Text>
-
-                    <TouchableOpacity
-                      activeOpacity={0.7}
-                      delayPressIn={0}
-                      delayPressOut={0}
-                      style={styles.tempoPlusBtnGiant}
-                      onPress={() => setBpm(Math.min(bpm + 1, 280))}
-                    >
-                      <Text style={styles.tempoBtnSymbolGiant}>+</Text>
-                    </TouchableOpacity>
-                  </View>
-                </View>
-
-                {/* FADER DE RESONANCE UBICADO EN EL ESPACIO LIBRE DEBAJO DE TEMPO */}
-                <View style={styles.resonanceCardBelowTempo}>
-                  <HorizontalFader
-                    label="RESONANCE"
-                    value={activeFader.resonance}
-                    onChange={(val) => {
-                      setFaders((prev) =>
-                        prev.map((f) => (f.id === activeFader.id ? { ...f, resonance: val } : f))
-                      );
-                      setLayerParam(activeFader.id - 1, 'resonance', val);
-                    }}
-                    color="#FF9100"
-                    icon="◇"
-                  />
-                </View>
-              </View>
-
-              {/* COLUMNA DERECHA: BANCOS DE MEMORIA */}
-              <View style={styles.banksContainerStretchedFullHeight}>
-                <Text style={styles.banksHeader}>MEMORY BANKS</Text>
-                <View style={styles.banksGridTwoCols}>
-                  {[1, 2, 3, 4, 5, 6, 7, 8].map((bankNum) => {
-                    const isActive = activeBank === bankNum;
-                    const hasPreset = !!memoryBanksCatalog[bankNum];
-                    return (
-                      <TouchableOpacity
-                        key={bankNum}
-                        activeOpacity={0.7}
-                        delayPressIn={0}
-                        delayPressOut={0}
-                        style={[
-                          styles.bankCardBtn,
-                          hasPreset && styles.bankCardBtnHasPreset,
-                          isActive && styles.bankCardBtnActive,
-                        ]}
-                        onPressIn={() => handleBankPressIn(bankNum)}
-                        onPressOut={() => handleBankPressOut(bankNum)}
-                      >
-                        <Text
-                          style={[
-                            styles.bankCardBadge,
-                            hasPreset && styles.bankCardBadgeHasPreset,
-                            isActive && styles.bankCardBadgeActive,
-                          ]}
-                        >
-                          {isActive ? 'EN USO' : hasPreset ? 'GUARDADO' : 'VACÍO'}
-                        </Text>
-                        <Text
-                          style={[
-                            styles.bankCardText,
-                            hasPreset && styles.bankCardTextHasPreset,
-                            isActive && styles.bankCardTextActive,
-                          ]}
-                        >
-                          BANK
-                        </Text>
-                        <Text
-                          style={[
-                            styles.bankCardNum,
-                            hasPreset && styles.bankCardNumHasPreset,
-                            isActive && styles.bankCardNumActive,
-                          ]}
-                        >
-                          {bankNum}
-                        </Text>
-                      </TouchableOpacity>
-                    );
-                  })}
-                </View>
+              <View style={styles.editOctaveRow}>
+                <Text style={styles.stepperLabel}>OCTAVA F{activeFader.id}</Text>
+                <TouchableOpacity
+                  activeOpacity={0.7}
+                  delayPressIn={0}
+                  delayPressOut={0}
+                  style={styles.stepperBtn}
+                  onPress={() => shiftFaderOctave(activeFader.id, -1)}
+                >
+                  <Text style={styles.stepperBtnText}>-</Text>
+                </TouchableOpacity>
+                <Text style={styles.stepperValue}>{formatSigned(activeFader.octave)}</Text>
+                <TouchableOpacity
+                  activeOpacity={0.7}
+                  delayPressIn={0}
+                  delayPressOut={0}
+                  style={styles.stepperBtn}
+                  onPress={() => shiftFaderOctave(activeFader.id, 1)}
+                >
+                  <Text style={styles.stepperBtnText}>+</Text>
+                </TouchableOpacity>
               </View>
             </View>
 
-            {/* Slider Horizontal de Modulación al Fondo */}
-            <View style={styles.rightBottomModRow}>
-              <HorizontalFader
-                label="MODULATION"
-                value={modulation}
-                onChange={setModulation}
-                color="#00E5FF"
-                icon="∿"
-              />
+            {/* Columna 2: envolvente */}
+            <View style={styles.editCard}>
+              <Text style={styles.editCardTitle}>ENVOLVENTE</Text>
+              <View style={styles.editFaderStack}>
+                <HorizontalFader large label="ATTACK" value={activeFader.attack} displayValue={formatAttack(activeFader.attack)} color="#FF9100" onChange={(v) => updateActiveFaderParam('attack', v)} />
+                <HorizontalFader large label="DECAY" value={activeFader.delay} displayValue={formatDecay(activeFader.delay)} color="#FF9100" onChange={(v) => updateActiveFaderParam('delay', v)} />
+                <HorizontalFader large label="SUSTAIN" value={activeFader.sustain} displayValue={formatSustain(activeFader.sustain)} color="#FF9100" onChange={(v) => updateActiveFaderParam('sustain', v)} />
+                <HorizontalFader large label="RELEASE" value={activeFader.release} displayValue={formatRelease(activeFader.release)} color="#FF9100" onChange={(v) => updateActiveFaderParam('release', v)} />
+              </View>
+            </View>
+
+            {/* Columna 3: filtro y modulación */}
+            <View style={styles.editCard}>
+              <Text style={styles.editCardTitle}>FILTRO</Text>
+              <View style={styles.editFaderStack}>
+                <HorizontalFader large label="CUTOFF" value={activeFader.cutoff} color="#00E5FF" onChange={(v) => updateActiveFaderParam('cutoff', v)} />
+                <HorizontalFader large label="RESONANCIA" value={activeFader.resonance} color="#00E5FF" onChange={(v) => updateActiveFaderParam('resonance', v)} />
+              </View>
+              <Text style={[styles.editCardTitle, styles.editCardTitleSpaced]}>MODULACIÓN (TODAS LAS VOCES)</Text>
+              <HorizontalFader large label="VIBRATO" value={modulation} color="#B388FF" onChange={setModulation} />
             </View>
           </View>
         </View>
@@ -1798,7 +1450,7 @@ export default function App() {
               delayPressIn={0}
               delayPressOut={0}
               style={styles.libBackIconBtn}
-              onPress={() => setCurrentView('MAIN')}
+              onPress={() => setCurrentView(voiceLibraryReturnView)}
             >
               <BackArrowIcon size={16} color="#00E5FF" />
             </TouchableOpacity>
@@ -2321,90 +1973,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 6,
     paddingVertical: 2,
   },
-  header: {
-    height: 32,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    backgroundColor: '#101622',
-    borderRadius: 6,
-    paddingHorizontal: 10,
-    borderWidth: 1,
-    borderColor: '#192433',
-    position: 'relative',
-  },
-  midiStatusBoxHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#06090E',
-    paddingHorizontal: 7,
-    paddingVertical: 3,
-    borderRadius: 4,
-    borderWidth: 1,
-    borderColor: '#131C28',
-    gap: 4,
-  },
-  midiStatusBoxHeaderConnected: {
-    borderColor: '#00E5FF55',
-    backgroundColor: '#071824',
-  },
-  midiStatusTextHeader: {
-    color: '#6B829D',
-    fontSize: 7.5,
-    fontWeight: '800',
-    letterSpacing: 0.3,
-  },
-  midiStatusTextHeaderConnected: {
-    color: '#00E5FF',
-    fontWeight: '900',
-  },
-  btHeaderBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#0A121F',
-    paddingHorizontal: 7,
-    paddingVertical: 3,
-    borderRadius: 4,
-    borderWidth: 1,
-    borderColor: '#192C44',
-    gap: 4,
-  },
-  btHeaderBtnConnected: {
-    backgroundColor: '#071D2B',
-    borderColor: '#00E5FF',
-  },
-  sustainHeaderBtnOn: {
-    backgroundColor: '#1F1A05',
-    borderColor: '#FFC400',
-  },
-  sustainHeaderBtnTextOn: {
-    color: '#FFC400',
-    fontWeight: '900',
-  },
-  btHeaderBtnScanning: {
-    borderColor: '#2979FF',
-    backgroundColor: '#0C1A30',
-  },
-  btHeaderBtnText: {
-    color: '#8A9EB8',
-    fontSize: 7.5,
-    fontWeight: '800',
-    letterSpacing: 0.3,
-  },
-  btHeaderBtnTextConnected: {
-    color: '#00E5FF',
-    fontWeight: '900',
-  },
-  btHeaderBtnTextScanning: {
-    color: '#64B5F6',
-  },
-  btHeaderConnectedDot: {
-    width: 5,
-    height: 5,
-    borderRadius: 2.5,
-    backgroundColor: '#00E676',
-    marginLeft: 1,
-  },
   bleModalBox: {
     width: '92%',
     maxWidth: 580,
@@ -2724,661 +2292,6 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     textAlign: 'center',
   },
-  headerCenterAbsolute: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    alignItems: 'center',
-  },
-  headerTitle: {
-    color: '#FFFFFF',
-    fontSize: 13,
-    fontWeight: '900',
-    letterSpacing: 1.1,
-  },
-  headerTitleCyan: {
-    color: '#00E5FF',
-  },
-  headerTitlePro: {
-    color: '#00A3FF',
-    fontStyle: 'italic',
-    fontWeight: '700',
-  },
-  headerRightInfo: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  sysTimeText: {
-    color: '#A0B3C9',
-    fontSize: 9,
-    fontWeight: '700',
-    marginRight: 10,
-  },
-  sysDotGreen: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: '#00E676',
-    marginRight: 5,
-  },
-  sysBattery: {
-    color: '#00E676',
-    fontSize: 9,
-    fontWeight: '800',
-  },
-  mainWorkspace: {
-    flex: 1,
-    flexDirection: 'row',
-    marginTop: 4,
-  },
-  leftPanel: {
-    width: '31%',
-    backgroundColor: '#0D121B',
-    borderRadius: 8,
-    padding: 5,
-    marginRight: 4,
-    borderWidth: 1,
-    borderColor: '#17202C',
-    justifyContent: 'space-between',
-  },
-  panelHeaderRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  panelTitle: {
-    color: '#44576E',
-    fontSize: 8,
-    fontWeight: '800',
-    letterSpacing: 0.6,
-  },
-  menuIcon: {
-    color: '#44576E',
-    fontSize: 12,
-  },
-  stylesListContainer: {
-    backgroundColor: '#070A0F',
-    borderRadius: 6,
-    padding: 2,
-    borderWidth: 1,
-    borderColor: '#121A24',
-    maxHeight: 90,
-  },
-  stylesListScroll: {
-    maxHeight: 86,
-  },
-  styleItemRow: {
-    paddingVertical: 3,
-    paddingHorizontal: 6,
-    borderRadius: 4,
-    marginBottom: 1,
-  },
-  styleItemRowSelected: {
-    backgroundColor: '#122233',
-    borderWidth: 1,
-    borderColor: '#00E5FF',
-  },
-  styleItemText: {
-    color: '#5C7087',
-    fontSize: 9,
-    fontWeight: '600',
-  },
-  styleItemTextSelected: {
-    color: '#00E5FF',
-    fontWeight: '800',
-  },
-  styleSectionsMatrix: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginVertical: 3,
-  },
-  sectionCol: {
-    width: '23.5%',
-    justifyContent: 'space-between',
-  },
-  sectionBtnRect: {
-    height: 27,
-    borderRadius: 4,
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingVertical: 2.5,
-    paddingHorizontal: 2,
-    marginBottom: 3,
-    borderWidth: 1,
-  },
-  sectionBtnQueued: {
-    borderColor: '#FFD700',
-    backgroundColor: '#2A2000',
-    shadowColor: '#FFD700',
-    shadowOpacity: 0.9,
-    shadowRadius: 5,
-  },
-  queuedText: {
-    color: '#FFD700',
-    fontWeight: '900',
-  },
-  beatIndicatorRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 3,
-  },
-  beatDot: {
-    width: 3.5,
-    height: 3.5,
-    borderRadius: 2,
-    backgroundColor: '#1E293B',
-  },
-  beatDotIntroActive: {
-    backgroundColor: '#FFB300',
-    shadowColor: '#FFB300',
-    shadowOpacity: 1,
-    shadowRadius: 3,
-  },
-  beatDotMainActive: {
-    backgroundColor: '#00E5FF',
-    shadowColor: '#00E5FF',
-    shadowOpacity: 1,
-    shadowRadius: 3,
-  },
-  beatDotEndingActive: {
-    backgroundColor: '#FF1744',
-    shadowColor: '#FF1744',
-    shadowOpacity: 1,
-    shadowRadius: 3,
-  },
-  sectionBtnText: {
-    fontSize: 7.5,
-    fontWeight: '800',
-    letterSpacing: 0.2,
-  },
-  introBtn: {
-    backgroundColor: '#1C1508',
-    borderColor: '#FFB30055',
-  },
-  introBtnActive: {
-    backgroundColor: '#FFB300',
-    borderColor: '#FFD54F',
-    shadowColor: '#FFB300',
-    shadowOpacity: 0.9,
-    shadowRadius: 5,
-  },
-  introText: {
-    color: '#FFB300',
-  },
-  introTextActive: {
-    color: '#000000',
-    fontWeight: '900',
-  },
-  mainBtn: {
-    backgroundColor: '#081720',
-    borderColor: '#00E5FF44',
-  },
-  mainBtnActive: {
-    backgroundColor: '#00E5FF',
-    borderColor: '#80D8FF',
-    shadowColor: '#00E5FF',
-    shadowOpacity: 0.9,
-    shadowRadius: 5,
-  },
-  mainText: {
-    color: '#00E5FF',
-  },
-  mainTextActive: {
-    color: '#000000',
-    fontWeight: '900',
-  },
-  endingBtn: {
-    backgroundColor: '#200A0A',
-    borderColor: '#FF174444',
-  },
-  endingBtnActive: {
-    backgroundColor: '#FF1744',
-    borderColor: '#FF5252',
-    shadowColor: '#FF1744',
-    shadowOpacity: 0.9,
-    shadowRadius: 5,
-  },
-  endingText: {
-    color: '#FF5252',
-  },
-  endingTextActive: {
-    color: '#FFFFFF',
-    fontWeight: '900',
-  },
-  centerPanel: {
-    width: '34%',
-    backgroundColor: '#0D121B',
-    borderRadius: 8,
-    padding: 5,
-    marginRight: 4,
-    borderWidth: 1,
-    borderColor: '#17202C',
-    justifyContent: 'space-between',
-  },
-  fadersGridSeparated: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    flex: 1,
-    marginVertical: 2,
-  },
-  centerBottomControlRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginTop: 3,
-  },
-  octaveTrpBlock: {
-    width: '48.5%',
-    backgroundColor: '#06090E',
-    borderRadius: 6,
-    padding: 3,
-    borderWidth: 1,
-    borderColor: '#121A24',
-    alignItems: 'center',
-  },
-  octaveTrpTitle: {
-    color: '#3B4D63',
-    fontSize: 6.5,
-    fontWeight: '800',
-  },
-  octaveTrpRowInner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    width: '100%',
-    marginTop: 2,
-  },
-  octaveMinusBtn: {
-    width: 24,
-    height: 24,
-    backgroundColor: '#0F1620',
-    borderRadius: 4,
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#1C2B3E',
-  },
-  octavePlusBtn: {
-    width: 24,
-    height: 24,
-    backgroundColor: '#00E5FF',
-    borderRadius: 4,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  octaveBtnSymbol: {
-    color: '#FFFFFF',
-    fontSize: 13,
-    fontWeight: '900',
-  },
-  octaveValueText: {
-    color: '#FFFFFF',
-    fontSize: 10,
-    fontWeight: '900',
-  },
-  rightPanel: {
-    flex: 1,
-    backgroundColor: '#0D121B',
-    borderRadius: 8,
-    padding: 5,
-    borderWidth: 1,
-    borderColor: '#17202C',
-    justifyContent: 'space-between',
-  },
-  rightTopRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    flex: 1,
-    marginBottom: 4,
-  },
-  adsrAndTempoLeftCol: {
-    width: '61%',
-    justifyContent: 'space-between',
-  },
-  adsrCardContainerCompact: {
-    backgroundColor: '#06090E',
-    borderRadius: 6,
-    padding: 4,
-    borderWidth: 1,
-    borderColor: '#121A24',
-  },
-  adsrGraphCardBox: {
-    height: 60,
-    width: '100%',
-    backgroundColor: '#0A0F17',
-    borderRadius: 4,
-    padding: 1,
-    borderWidth: 1,
-    borderColor: '#16202E',
-    justifyContent: 'center',
-    alignItems: 'center',
-    overflow: 'hidden',
-  },
-  adsrMiddleRowWithFilters: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginVertical: 4,
-  },
-  adsrKnobLeftColSingle: {
-    width: '50%',
-    alignItems: 'center',
-  },
-  cutoffSingleCol: {
-    width: '45%',
-    alignItems: 'center',
-  },
-  adsrFourBtnsRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginTop: 2,
-  },
-  adsrFourBtnPill: {
-    width: '23.5%',
-    paddingVertical: 3,
-    backgroundColor: '#0F1620',
-    borderRadius: 3,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#172332',
-  },
-  adsrFourBtnPillActive: {
-    backgroundColor: '#1C293A',
-    borderColor: '#FF9100',
-  },
-  adsrFourBtnText: {
-    color: '#3B4D63',
-    fontSize: 5.5,
-    fontWeight: '800',
-  },
-  adsrFourBtnTextActive: {
-    color: '#FF9100',
-    fontWeight: '900',
-  },
-  adsrFourBtnVal: {
-    color: '#5C7087',
-    fontSize: 6.5,
-    fontWeight: '800',
-    marginTop: 1,
-  },
-  adsrFourBtnValActive: {
-    color: '#FFFFFF',
-  },
-  tempoCardShiftedUpDirect: {
-    backgroundColor: '#06090E',
-    borderRadius: 6,
-    padding: 3,
-    borderWidth: 1,
-    borderColor: '#121A24',
-    alignItems: 'center',
-    marginTop: 3,
-  },
-  tempoBlockTitleBig: {
-    color: '#3B4D63',
-    fontSize: 6.5,
-    fontWeight: '800',
-  },
-  tempoRowInnerGiant: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    width: '100%',
-    marginTop: 1,
-    paddingHorizontal: 4,
-  },
-  tempoBigNumGiant: {
-    color: '#FFFFFF',
-    fontSize: 12,
-    fontWeight: '900',
-  },
-  bpmSubTextGiant: {
-    color: '#00E676',
-    fontSize: 7,
-    fontWeight: '700',
-  },
-  tempoMinusBtnGiant: {
-    width: 26,
-    height: 26,
-    backgroundColor: '#0F1620',
-    borderRadius: 5,
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#1C2B3E',
-  },
-  tempoPlusBtnGiant: {
-    width: 26,
-    height: 26,
-    backgroundColor: '#00E676',
-    borderRadius: 5,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  tempoBtnSymbolGiant: {
-    color: '#FFFFFF',
-    fontSize: 14,
-    fontWeight: '900',
-  },
-  resonanceCardBelowTempo: {
-    backgroundColor: '#06090E',
-    borderRadius: 6,
-    padding: 4,
-    borderWidth: 1,
-    borderColor: '#121A24',
-    marginTop: 3,
-  },
-  banksContainerStretchedFullHeight: {
-    width: '37%',
-    backgroundColor: '#06090E',
-    borderRadius: 6,
-    padding: 4,
-    borderWidth: 1,
-    borderColor: '#121A24',
-    justifyContent: 'space-between',
-  },
-  banksHeader: {
-    color: '#3B4D63',
-    fontSize: 7,
-    fontWeight: '800',
-    textAlign: 'center',
-    marginBottom: 2,
-  },
-  banksGridTwoCols: {
-    flex: 1,
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    justifyContent: 'space-between',
-    alignContent: 'space-between',
-  },
-  bankCardBtn: {
-    width: '48%',
-    height: '23.5%',
-    backgroundColor: '#0D131C',
-    borderRadius: 4,
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#1E293B',
-  },
-  bankCardBtnHasPreset: {
-    borderColor: '#00E5FF',
-    backgroundColor: '#071B26',
-  },
-  bankCardBtnActive: {
-    backgroundColor: '#072414',
-    borderColor: '#00E676',
-  },
-  bankCardBadge: {
-    fontSize: 5,
-    fontWeight: '900',
-    color: '#475569',
-    letterSpacing: 0.5,
-    marginBottom: -1,
-  },
-  bankCardBadgeHasPreset: {
-    color: '#00E5FF',
-  },
-  bankCardBadgeActive: {
-    color: '#00E676',
-  },
-  bankCardText: {
-    color: '#64748B',
-    fontSize: 5,
-    fontWeight: '800',
-  },
-  bankCardTextHasPreset: {
-    color: '#00E5FF',
-  },
-  bankCardTextActive: {
-    color: '#00E676',
-  },
-  bankCardNum: {
-    color: '#64748B',
-    fontSize: 10,
-    fontWeight: '900',
-  },
-  bankCardNumHasPreset: {
-    color: '#00E5FF',
-  },
-  bankCardNumActive: {
-    color: '#00E676',
-  },
-  rightBottomModRow: {
-    width: '100%',
-    backgroundColor: '#06090E',
-    borderRadius: 6,
-    padding: 4,
-    borderWidth: 1,
-    borderColor: '#121A24',
-  },
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(4, 7, 12, 0.88)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 12,
-  },
-  modalContentBox: {
-    width: '95%',
-    height: '92%',
-    backgroundColor: '#0B1019',
-    borderRadius: 10,
-    borderWidth: 1.5,
-    borderColor: '#00E5FF',
-    padding: 12,
-    shadowColor: '#00E5FF',
-    shadowOpacity: 0.3,
-    shadowRadius: 10,
-    elevation: 8,
-  },
-  modalHeaderRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: '#162335',
-    paddingBottom: 6,
-  },
-  modalTitleBox: {
-    flex: 1,
-  },
-  modalTitleText: {
-    color: '#00E5FF',
-    fontSize: 13,
-    fontWeight: '900',
-    letterSpacing: 1,
-  },
-  modalSubTitleText: {
-    color: '#657D99',
-    fontSize: 9,
-    fontWeight: '600',
-    marginTop: 1,
-  },
-  modalCloseBtn: {
-    backgroundColor: '#1E2A3A',
-    paddingVertical: 5,
-    paddingHorizontal: 10,
-    borderRadius: 5,
-    borderWidth: 1,
-    borderColor: '#30455E',
-  },
-  modalCloseBtnText: {
-    color: '#FF5252',
-    fontSize: 10,
-    fontWeight: '800',
-  },
-  targetFaderRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 8,
-    gap: 6,
-  },
-  targetFaderLabel: {
-    color: '#8CA3BF',
-    fontSize: 9,
-    fontWeight: '800',
-    marginRight: 4,
-  },
-  targetFaderBtn: {
-    flex: 1,
-    backgroundColor: '#0D1522',
-    borderWidth: 1,
-    borderColor: '#19283D',
-    borderRadius: 6,
-    paddingVertical: 4,
-    paddingHorizontal: 6,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-  },
-  targetFaderBtnActive: {
-    backgroundColor: '#002B3D',
-    borderColor: '#00E5FF',
-  },
-  targetFaderBtnNum: {
-    color: '#3D5470',
-    fontSize: 9,
-    fontWeight: '900',
-  },
-  targetFaderBtnNumActive: {
-    color: '#00E5FF',
-  },
-  targetFaderBtnName: {
-    color: '#7F9BB8',
-    fontSize: 9,
-    fontWeight: '700',
-    flex: 1,
-  },
-  targetFaderBtnNameActive: {
-    color: '#FFFFFF',
-  },
-  categoriesBar: {
-    flexDirection: 'row',
-    gap: 4,
-    marginBottom: 8,
-  },
-  categoryPill: {
-    flex: 1,
-    backgroundColor: '#0F1826',
-    borderWidth: 1,
-    borderColor: '#1C2D45',
-    borderRadius: 4,
-    paddingVertical: 4,
-    alignItems: 'center',
-  },
-  categoryPillActive: {
-    backgroundColor: '#00E5FF',
-    borderColor: '#00E5FF',
-  },
-  categoryPillText: {
-    color: '#6F8AA8',
-    fontSize: 9,
-    fontWeight: '800',
-  },
-  categoryPillTextActive: {
-    color: '#050911',
-  },
   consoleAlertOverlay: {
     flex: 1,
     backgroundColor: 'rgba(5, 10, 16, 0.85)',
@@ -3462,170 +2375,6 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: '900',
   },
-  voicesScrollView: {
-    flex: 1,
-  },
-  voicesGridContainer: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    paddingBottom: 10,
-  },
-  voiceCardItem: {
-    width: '32%',
-    backgroundColor: '#0E1724',
-    borderWidth: 1,
-    borderColor: '#1A293D',
-    borderRadius: 6,
-    padding: 8,
-  },
-  voiceCardItemActive: {
-    backgroundColor: '#072535',
-    borderColor: '#00E5FF',
-  },
-  voiceCardHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 4,
-  },
-  voiceCardCategory: {
-    color: '#00E5FF',
-    fontSize: 8,
-    fontWeight: '800',
-  },
-  voiceCardPreset: {
-    color: '#526A87',
-    fontSize: 8,
-    fontWeight: '700',
-  },
-  voiceCardName: {
-    color: '#D0E1F5',
-    fontSize: 10,
-    fontWeight: '800',
-    marginBottom: 6,
-  },
-  voiceCardNameActive: {
-    color: '#FFFFFF',
-  },
-  voiceCardFooter: {
-    borderTopWidth: 1,
-    borderTopColor: '#162335',
-    paddingTop: 4,
-    alignItems: 'flex-start',
-  },
-  voiceAssignBadge: {
-    color: '#4B6380',
-    fontSize: 7.5,
-    fontWeight: '700',
-  },
-  voiceAssignBadgeActive: {
-    color: '#00E5FF',
-    fontWeight: '900',
-  },
-  modalHeaderActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  modalImportBtn: {
-    backgroundColor: '#00B0FF',
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 4,
-  },
-  modalImportBtnText: {
-    color: '#FFFFFF',
-    fontSize: 9,
-    fontWeight: '900',
-  },
-  modalIconBtnImport: {
-    height: 30,
-    paddingHorizontal: 12,
-    borderRadius: 5,
-    backgroundColor: '#00E5FF',
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#00E5FF',
-  },
-  modalIconBtnImportText: {
-    color: '#090E17',
-    fontSize: 16,
-    fontWeight: '900',
-  },
-  modalIconBtnClose: {
-    height: 30,
-    paddingHorizontal: 12,
-    borderRadius: 5,
-    backgroundColor: '#1E293B',
-    borderWidth: 1,
-    borderColor: '#334155',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  modalIconBtnCloseText: {
-    color: '#F8FAFC',
-    fontSize: 14,
-    fontWeight: 'bold',
-  },
-  styleItemRowEmpty: {
-    paddingVertical: 3,
-    paddingHorizontal: 6,
-    borderRadius: 4,
-    marginBottom: 1,
-    height: 20,
-    justifyContent: 'center',
-  },
-  styleItemTextEmpty: {
-    color: '#26354A',
-    fontSize: 8,
-    fontStyle: 'italic',
-    fontWeight: '600',
-  },
-  styleCategoriesBar: {
-    maxHeight: 26,
-    marginBottom: 4,
-  },
-  styleCategoryPillMini: {
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 8,
-    backgroundColor: '#101726',
-    borderWidth: 1,
-    borderColor: '#19263B',
-    marginRight: 4,
-  },
-  styleCategoryPillMiniActive: {
-    backgroundColor: '#00E5FF',
-    borderColor: '#00E5FF',
-  },
-  styleCategoryPillMiniText: {
-    color: '#8A9EB8',
-    fontSize: 8,
-    fontWeight: '700',
-  },
-  styleCategoryPillMiniTextActive: {
-    color: '#090E17',
-    fontWeight: '900',
-  },
-  voiceCardItemCustom: {
-    borderColor: '#00B0FF',
-  },
-  voiceTrashBtn: {
-    marginTop: 4,
-    backgroundColor: '#3B1219',
-    borderColor: '#FF2A4B',
-    borderWidth: 1,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 3,
-  },
-  voiceTrashBtnText: {
-    color: '#FF2A4B',
-    fontSize: 7,
-    fontWeight: '900',
-  },
   fullScreenLibraryContainer: {
     flex: 1,
     backgroundColor: '#070A0F',
@@ -3699,11 +2448,6 @@ const styles = StyleSheet.create({
   },
   libSearchClearBtn: {
     padding: 2,
-  },
-  libSearchClearText: {
-    color: '#8A9EB8',
-    fontSize: 9,
-    fontWeight: 'bold',
   },
   libImportIconBtn: {
     width: 28,
@@ -3960,145 +2704,632 @@ const styles = StyleSheet.create({
     fontSize: 8.5,
     fontWeight: '900',
   },
-  transportRow: {
+
+  // =================== BARRA SUPERIOR ===================
+  topBar: {
+    height: 40,
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
-    gap: 4,
-    marginTop: 4,
-  },
-  syncStartBtnActive: {
-    borderColor: '#00E676',
-    backgroundColor: '#003314',
-  },
-  acmpBtnActive: {
-    borderColor: '#00E5FF',
-    backgroundColor: '#003644',
-  },
-  transportBtnRect: {
-    flex: 1,
-    height: 32,
-    borderRadius: 4,
-    backgroundColor: '#0F1722',
+    gap: 6,
+    backgroundColor: '#101622',
+    borderRadius: 8,
+    paddingHorizontal: 6,
     borderWidth: 1,
-    borderColor: '#1E293B',
+    borderColor: '#192433',
+  },
+  topMidiBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    height: 30,
+    maxWidth: 170,
+    paddingHorizontal: 8,
+    backgroundColor: '#06090E',
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#1A2636',
+  },
+  topMidiBtnConnected: {
+    backgroundColor: '#071824',
+    borderColor: '#00E5FF66',
+  },
+  topMidiDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
+    backgroundColor: '#FF5252',
+  },
+  topMidiDotOn: {
+    backgroundColor: '#00E676',
+  },
+  topMidiDotScanning: {
+    backgroundColor: '#2979FF',
+  },
+  topMidiText: {
+    flexShrink: 1,
+    color: '#6B829D',
+    fontSize: 9,
+    fontWeight: '800',
+  },
+  topMidiTextConnected: {
+    color: '#00E5FF',
+  },
+  topStyleBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    height: 30,
+    paddingHorizontal: 10,
+    backgroundColor: '#0A111B',
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#1E2E44',
+  },
+  topStyleLabel: {
+    color: '#4C6078',
+    fontSize: 8,
+    fontWeight: '900',
+  },
+  topStyleName: {
+    flex: 1,
+    color: '#E6F7FF',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  topStyleChevron: {
+    color: '#00E5FF',
+    fontSize: 18,
+    fontWeight: '900',
+    marginTop: -2,
+  },
+  topTempoBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    height: 30,
+    backgroundColor: '#06090E',
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#1A2636',
+  },
+  topTempoBtn: {
+    width: 30,
+    height: '100%',
     justifyContent: 'center',
     alignItems: 'center',
   },
-  transportBtnTitle: {
+  topTempoBtnText: {
+    color: '#00E5FF',
+    fontSize: 16,
+    fontWeight: '900',
+  },
+  topTempoValueBox: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    gap: 3,
+    minWidth: 58,
+    justifyContent: 'center',
+  },
+  topTempoValue: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: '900',
+  },
+  topTempoUnit: {
+    color: '#5D7290',
+    fontSize: 7,
+    fontWeight: '900',
+  },
+  topBeatRow: {
+    flexDirection: 'row',
+    gap: 4,
+    paddingHorizontal: 2,
+  },
+  topBeatDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: '#141D2A',
+    borderWidth: 1,
+    borderColor: '#1F2C3E',
+  },
+  topBeatDotOn: {
+    backgroundColor: '#00E5FF',
+    borderColor: '#80F2FF',
+  },
+  topBeatDotDownbeat: {
+    backgroundColor: '#FF1744',
+    borderColor: '#FF8A80',
+  },
+  topSustainBtn: {
+    height: 30,
+    paddingHorizontal: 10,
+    justifyContent: 'center',
+    backgroundColor: '#0A121F',
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#1E2E44',
+  },
+  topSustainBtnOn: {
+    backgroundColor: '#2A2205',
+    borderColor: '#FFC400',
+  },
+  topSustainText: {
     color: '#8A9EB8',
-    fontSize: 8.5,
+    fontSize: 10,
+    fontWeight: '900',
+  },
+  topSustainTextOn: {
+    color: '#FFC400',
+  },
+  topSysInfo: {
+    alignItems: 'flex-end',
+    paddingLeft: 2,
+  },
+  topSysText: {
+    color: '#5D7290',
+    fontSize: 8,
     fontWeight: '800',
-    letterSpacing: 0.3,
   },
-  transportBtnSub: {
-    color: '#475569',
-    fontSize: 6.5,
+
+  // =================== EN VIVO ===================
+  liveContainer: {
+    flex: 1,
+    paddingTop: 5,
+    gap: 5,
+  },
+  liveWorkspace: {
+    flex: 1,
+    flexDirection: 'row',
+    gap: 6,
+  },
+  arrangerZone: {
+    flex: 46,
+    gap: 6,
+  },
+  chordCard: {
+    flex: 1,
+    flexDirection: 'row',
+    backgroundColor: '#060A10',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#192433',
+    padding: 8,
+    gap: 10,
+  },
+  chordMain: {
+    flex: 1,
+    justifyContent: 'center',
+  },
+  chordLabel: {
+    color: '#4C6078',
+    fontSize: 8,
+    fontWeight: '900',
+    letterSpacing: 0.6,
+  },
+  chordText: {
+    color: '#00E5FF',
+    fontSize: 54,
+    fontWeight: '900',
+    letterSpacing: -1,
+  },
+  chordTextIdle: {
+    color: '#1E2B3D',
+  },
+  chordSide: {
+    width: '44%',
+    justifyContent: 'center',
+  },
+  sectionNowText: {
+    color: '#8A9EB8',
+    fontSize: 18,
+    fontWeight: '900',
+  },
+  sectionNowTextPlaying: {
+    color: '#FFFFFF',
+  },
+  sectionNextText: {
+    color: '#FFD700',
+    fontSize: 9,
     fontWeight: '800',
+    marginBottom: 6,
   },
-  syncStartTitleActive: {
-    color: '#00E676',
-    fontWeight: '900',
+  styleVolumeBox: {
+    marginTop: 2,
   },
-  syncStartSubActive: {
-    color: '#00E676',
-    fontWeight: '900',
+  mainSectionRow: {
+    height: 54,
+    flexDirection: 'row',
+    gap: 6,
   },
-  acmpTitleActive: {
-    color: '#00E5FF',
-    fontWeight: '900',
-  },
-  acmpSubActive: {
-    color: '#00E5FF',
-    fontWeight: '900',
-  },
-  startStopRectBtn: {
-    flex: 1.5,
-    height: 32,
-    borderRadius: 4,
-    backgroundColor: '#0D273D',
-    borderWidth: 1.5,
-    borderColor: '#00E5FF',
+  mainSectionBtn: {
+    flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    shadowColor: '#00E5FF',
-    shadowOpacity: 0.5,
-    shadowRadius: 4,
+    backgroundColor: '#081720',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#123142',
   },
-  startStopRectBtnActive: {
-    backgroundColor: '#350E14',
-    borderColor: '#FF1744',
-    shadowColor: '#FF1744',
-    shadowOpacity: 0.8,
-    shadowRadius: 5,
+  mainSectionBtnVariation: {
+    borderColor: '#00E5FF66',
   },
-  startStopRectTitle: {
+  mainSectionBtnActive: {
+    backgroundColor: '#00394A',
+    borderColor: '#00E5FF',
+    borderWidth: 1.5,
+  },
+  mainSectionKind: {
+    color: '#4C7A8C',
+    fontSize: 8,
+    fontWeight: '900',
+  },
+  mainSectionLetter: {
+    color: '#5FA9BF',
+    fontSize: 22,
+    fontWeight: '900',
+    marginTop: -2,
+  },
+  mainSectionLetterActive: {
     color: '#00E5FF',
-    fontSize: 8.5,
+  },
+  liveQueued: {
+    borderColor: '#FFD700',
+    borderWidth: 1.5,
+    backgroundColor: '#2A2000',
+  },
+  sectionTextQueued: {
+    color: '#FFD700',
+  },
+  specialSectionRow: {
+    height: 44,
+    flexDirection: 'row',
+    gap: 6,
+  },
+  specialBtn: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#0C111A',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#1E2A3A',
+  },
+  specialBtnDisabled: {
+    opacity: 0.45,
+  },
+  specialBtnText: {
+    fontSize: 13,
     fontWeight: '900',
     letterSpacing: 0.5,
-    textAlign: 'center',
   },
-  startStopRectTitleActive: {
+  liveIntroText: {
+    color: '#FFB300',
+  },
+  liveIntroBtnActive: {
+    backgroundColor: '#3A2900',
+    borderColor: '#FFB300',
+    borderWidth: 1.5,
+  },
+  fillText: {
+    color: '#B388FF',
+  },
+  fillBtnActive: {
+    backgroundColor: '#24183D',
+    borderColor: '#B388FF',
+    borderWidth: 1.5,
+  },
+  liveEndingText: {
     color: '#FF5252',
+  },
+  liveEndingBtnActive: {
+    backgroundColor: '#3D0A12',
+    borderColor: '#FF1744',
+    borderWidth: 1.5,
+  },
+  transportRowLive: {
+    height: 52,
+    flexDirection: 'row',
+    gap: 6,
+  },
+  transportBtnLive: {
+    flex: 1,
+    flexDirection: 'row',
+    gap: 6,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#0C111A',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#1E2A3A',
+  },
+  transportLed: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#1E2B3D',
+  },
+  transportLedSync: {
+    backgroundColor: '#00E676',
+  },
+  transportLedAcmp: {
+    backgroundColor: '#00E5FF',
+  },
+  transportBtnLiveText: {
+    color: '#8A9EB8',
+    fontSize: 13,
     fontWeight: '900',
   },
-  centerControlsRowBottom: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginTop: 4,
-    gap: 4,
+  syncBtnOn: {
+    backgroundColor: '#062A16',
+    borderColor: '#00E676',
   },
-  controlPillBox: {
-    flex: 1,
-    backgroundColor: '#070B12',
-    borderRadius: 4,
-    borderWidth: 1,
-    borderColor: '#162232',
-    padding: 3,
+  syncTextOn: {
+    color: '#00E676',
+  },
+  acmpBtnOn: {
+    backgroundColor: '#04232E',
+    borderColor: '#00E5FF',
+  },
+  acmpTextOn: {
+    color: '#00E5FF',
+  },
+  startBtnLive: {
+    flex: 1.6,
+    justifyContent: 'center',
     alignItems: 'center',
+    backgroundColor: '#00E5FF',
+    borderRadius: 8,
   },
-  controlPillLabel: {
-    color: '#7187A1',
+  startBtnLivePlaying: {
+    backgroundColor: '#FF1744',
+  },
+  startBtnLiveText: {
+    color: '#00151C',
+    fontSize: 17,
+    fontWeight: '900',
+    letterSpacing: 1,
+  },
+  startBtnLiveTextPlaying: {
+    color: '#FFFFFF',
+  },
+  mixerZone: {
+    flex: 54,
+    gap: 6,
+  },
+  fadersRowLive: {
+    flex: 1,
+    flexDirection: 'row',
+    gap: 5,
+  },
+  mixerBottomRow: {
+    height: 40,
+    flexDirection: 'row',
+    gap: 6,
+  },
+  stepperBlock: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#0C111A',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#1E2A3A',
+    paddingHorizontal: 8,
+  },
+  stepperLabel: {
+    flex: 1,
+    color: '#6B829D',
+    fontSize: 9,
+    fontWeight: '900',
+  },
+  stepperBtn: {
+    width: 34,
+    height: 30,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#152132',
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#24364D',
+  },
+  stepperBtnText: {
+    color: '#00E5FF',
+    fontSize: 16,
+    fontWeight: '900',
+  },
+  stepperValue: {
+    minWidth: 34,
+    textAlign: 'center',
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '900',
+  },
+  stepperValueChanged: {
+    color: '#FFC400',
+  },
+  bankBar: {
+    height: 42,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: '#0D121B',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#192433',
+    paddingHorizontal: 6,
+  },
+  bankBarLabelBox: {
+    paddingRight: 4,
+  },
+  bankBarLabel: {
+    color: '#8A9EB8',
+    fontSize: 10,
+    fontWeight: '900',
+  },
+  bankBarHint: {
+    color: '#4C6078',
     fontSize: 6.5,
     fontWeight: '800',
-    marginBottom: 2,
   },
-  controlPillBtnsRow: {
+  bankBtn: {
+    flex: 1,
+    height: 32,
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: '#070B12',
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#172332',
+  },
+  bankBtnSaved: {
+    borderColor: '#2E7D5B',
+    backgroundColor: '#08150F',
+  },
+  bankBtnActive: {
+    borderColor: '#00E5FF',
+    backgroundColor: '#052230',
+    borderWidth: 1.5,
+  },
+  bankBtnNum: {
+    color: '#3B4D63',
+    fontSize: 14,
+    fontWeight: '900',
+  },
+  bankBtnNumSaved: {
+    color: '#69F0AE',
+  },
+  bankBtnNumActive: {
+    color: '#00E5FF',
+  },
+  bankBtnDot: {
+    width: 5,
+    height: 5,
+    borderRadius: 2.5,
+    backgroundColor: '#1A2534',
+  },
+  bankBtnDotSaved: {
+    backgroundColor: '#00E676',
+  },
+  bankBtnDotActive: {
+    backgroundColor: '#00E5FF',
+  },
+  editVoiceBtn: {
+    height: 32,
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    width: '100%',
-    gap: 3,
+    gap: 5,
+    paddingHorizontal: 12,
+    marginLeft: 4,
+    backgroundColor: '#FF9100',
+    borderRadius: 6,
   },
-  stepBtnUltra: {
-    width: 22,
-    height: 18,
-    borderRadius: 3,
-    backgroundColor: '#101B2B',
-    borderWidth: 1,
-    borderColor: '#1E2F46',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  stepBtnText: {
-    color: '#00E5FF',
-    fontSize: 10,
-    fontWeight: 'bold',
-  },
-  stepValueBadge: {
-    backgroundColor: '#0F1A28',
-    borderRadius: 3,
-    paddingHorizontal: 5,
-    paddingVertical: 1,
-    borderWidth: 1,
-    borderColor: '#00E5FF44',
-    minWidth: 44,
-    alignItems: 'center',
-  },
-  stepValueText: {
-    color: '#FFFFFF',
-    fontSize: 7.5,
+  editVoiceBtnText: {
+    color: '#000000',
+    fontSize: 11,
     fontWeight: '900',
+  },
+
+  // =================== EDITAR VOZ ===================
+  editContainer: {
+    flex: 1,
+    paddingTop: 5,
+  },
+  editFaderTabs: {
+    flexDirection: 'row',
+    gap: 4,
+  },
+  editFaderTab: {
+    width: 92,
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    backgroundColor: '#080C14',
+    borderRadius: 5,
+    borderWidth: 1,
+    borderColor: '#1E293B',
+  },
+  editFaderTabActive: {
+    borderColor: '#FF9100',
+    backgroundColor: '#1F1405',
+  },
+  editFaderTabId: {
+    color: '#5D7290',
+    fontSize: 9,
+    fontWeight: '900',
+  },
+  editFaderTabIdActive: {
+    color: '#FF9100',
+  },
+  editFaderTabName: {
+    color: '#6B829D',
+    fontSize: 8,
+    fontWeight: '700',
+  },
+  editFaderTabNameActive: {
+    color: '#FFE0B2',
+  },
+  editBody: {
+    flex: 1,
+    flexDirection: 'row',
+    gap: 6,
+  },
+  editCard: {
+    flex: 1,
+    backgroundColor: '#0A0F17',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#192433',
+    padding: 10,
+  },
+  editCardTitle: {
+    color: '#6B829D',
+    fontSize: 9,
+    fontWeight: '900',
+    letterSpacing: 0.6,
+    marginBottom: 6,
+  },
+  editCardTitleSpaced: {
+    marginTop: 14,
+  },
+  editFaderStack: {
+    gap: 10,
+  },
+  editVoiceNameBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#060A10',
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#24364D',
+    padding: 8,
+  },
+  editVoiceName: {
+    flex: 1,
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  editVoiceChange: {
+    color: '#00E5FF',
+    fontSize: 9,
+    fontWeight: '900',
+  },
+  editGraphBox: {
+    flex: 1,
+    marginVertical: 8,
+    backgroundColor: '#05080D',
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#121C2B',
+    overflow: 'hidden',
+  },
+  editOctaveRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
   },
 });
