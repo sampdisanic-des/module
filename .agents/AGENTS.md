@@ -5,10 +5,10 @@
 - **Use Icons Only**: Use SVG icons, vector graphics, UI symbol glyphs, or standard clean text formatting instead of emojis.
 
 ## Deployment and ADB Guidelines
-- **WiFi ADB**: Always deploy APKs to the physical device via WiFi ADB at `192.168.1.11:5555`. Before deploying, always run `adb connect 192.168.1.11:5555` first.
+- **WiFi ADB**: Always deploy APKs to the physical device via WiFi ADB on port 5555. The phone's IP changes (DHCP: seen as 192.168.1.9, .11 and .12); if `adb connect` fails, scan 192.168.1.x for an open port 5555. Before deploying, always run `adb connect <ip>:5555` first.
 - **ADB Path**: Use the full path `C:\Users\SMP\AppData\Local\Android\Sdk\platform-tools\adb.exe` for all ADB commands.
 - **Deploy Flow**: The standard deploy sequence is: `adb connect` -> `adb install -r` -> `adb shell am start`.
-- **Enable WiFi ADB**: If WiFi ADB is not active, connect the phone via USB and run `adb tcpip 5555` followed by `adb connect 192.168.1.11:5555`, then the USB cable can be removed.
+- **Enable WiFi ADB**: If WiFi ADB is not active, connect the phone via USB and run `adb tcpip 5555` followed by `adb connect <ip>:5555`, then the USB cable can be removed.
 - **Build Type**: Use `gradlew assembleRelease` for standalone, offline, zero-red-screen deployment. Release APK location: `android\app\build\outputs\apk\release\app-release.apk`.
 - **CodeGraph**: In this repository indexed by CodeGraph (a `.codegraph/` directory exists), reach for CodeGraph BEFORE grep/find or reading files when exploring or locating code:
   - **MCP tool**: `codegraph_explore` answers symbol source and call paths in one call.
@@ -86,61 +86,38 @@ Dado que las carpetas de compilación pesadas (`node_modules/`, `android/build/`
 
 ## Estado Actual del Proyecto y Arquitectura del Código (Session Context)
 
-### 1. Resumen de la Interfaz y Componentes Implementados (`App.tsx`)
-- **Header Principal Fijo y Persistente:**
-  - **Izquierda:** Estado de conectividad MIDI OTG (`PSR-E463 USB OK` o `BUSCANDO MIDI OTG`) y botón modal **BT MIDI** para escanear y conectar teclados Bluetooth LE inalámbricos (M-Vave).
-  - **Centro:** Título de la aplicación `SYNTH CONNECT Pro` perfectamente centrado.
-  - **Derecha:** Hora en tiempo real del dispositivo (`H:MM AM/PM`) y porcentaje de batería en vivo consumiendo `expo-battery`.
-- **Arquitectura de Navegación Integrada a Pantalla Completa (Cero Popups Flotantes):**
-  - **`currentView: 'MAIN' | 'STYLE_LIBRARY' | 'VOICE_LIBRARY'`**:
-    - **`MAIN`**: Consola principal de 3 paneles (Arranger de ritmos, 4 Faders de voces, Consola ADSR/Filtros/Bancos).
-    - **`STYLE_LIBRARY`**: Navegador a pantalla completa de la librería de ritmos (.STY).
-    - **`VOICE_LIBRARY`**: Navegador a pantalla completa de instrumentos y SoundFonts (.SF2).
-    - Botón superior `<BackArrowIcon />` (`28x28`) para regresar instantáneamente a la consola principal.
-    - Soporte completo para el botón de retroceso de hardware / gestual de Android (`BackHandler`).
-- **Iconografía Vectorial SVG Nativa (Cero Emojis):**
-  - Componentes SVG limpios: `<SearchIcon />`, `<BackArrowIcon />`, `<PlusIcon />`, `<EditIcon />`, `<TrashIcon />`, `<AssignIcon />`, `<CloseIcon />`, `<BluetoothIcon />`.
-- **Panel de Ritmos (.STY) y Transporte Rectangular:**
-  - Lista de ritmos con selección táctil directa.
-  - Slider horizontal `STYLE VOLUME` 3D con arrastre gestual continuo (`PanResponder`).
-  - 8 Botones rectangulares de sección (`INTRO A..D`, `MAIN A..D`) con medidor de 4 beats en tiempo real.
-  - Barra de transporte rectangular estilizada de 4 columnas:
-    - `[ SYNC START ]`: Estado LED verde activo.
-    - `[ ACMP ON/OFF ]`: Estado LED cyan activo.
-    - `[ START / STOP ]`: Botón principal rectangular con estado dinámico (Cyan en STOP, Rojo en PLAYING).
-    - `[ FILL IN ]`: Botón rectangular de remate de variación.
-- **Librería de Ritmos (.STY):**
-  - Barra de búsqueda con `<SearchIcon />` y botón `<CloseIcon />` para limpiar texto.
-  - Selector de categorías con contador dinámico en tiempo real (`ALL (15)`, `LATIN (8)`...).
-  - Botón de importar `<PlusIcon />` en Cyan brillante.
-  - Tarjetas de ritmos enumeradas (`#01`, `#02`...) con selección táctil directa y botones de icono compactos `<EditIcon />` y `<TrashIcon />`.
-- **Panel Central (Performance Layers):**
-  - **Header con Menú Hamburguesa `≡`:** Abre la librería de voces a pantalla completa.
-  - **4 Canales Faders Independientes:** Cada fader de voz (`Concert Grand Piano`, `Ambient Pad Warm`, `Syn Strings Symphony`, `Synth Lead Moog Saw`) en su tarjeta dedicada con VU meter LED dinámico.
-  - **Borde de Selección Cyan:** Al presionar o arrastrar un canal, se resalta con borde azul cyan brillante (`#00E5FF`).
-  - **Controles Inferiores `OCTAVE` y `TRANSPOSE`:**
-    - `OCTAVE`: `- [ OCT 0 ] +` individual para el fader seleccionado (rango -3 a +3).
-    - `TRANSPOSE`: `- [ TRP 0 ] +` global para todos los faders (rango -12 a +12 semitonos).
-- **Librería de Voces & SoundFonts:**
-  - Selector de canal destino (`F1`, `F2`, `F3`, `F4`).
-  - Barra de búsqueda con `<SearchIcon />` y botón `<CloseIcon />`.
-  - Categorías con contadores dinámicos (`ALL`, `PIANO`, `PADS`, `STRINGS`, `LEADS`, `BRASS`, `ORGAN`, `BASS`, `CUSTOM`).
-  - Botón de importar .SF2 con `<PlusIcon />`.
-  - Tarjetas de voces enumeradas (`#001`, `#002`...):
-    - Toque directo en la tarjeta para audición táctil instantánea.
-    - Botón compacto de asignación `<AssignIcon />` que se ilumina al estar asignado al fader destino.
-    - Botón compacto de edición de nombre `<EditIcon />`.
-    - Botón compacto de eliminación `<TrashIcon />`.
-- **Panel Derecho (Consola Digital ADSR + Filtros + Tempo + Bancos + Modulación):**
-  - **Tarjeta ENVELOPE (ADSR):**
-    - Gráfica interactiva SVG (220x70) con 4 nodos coloreados (`A`, `D`, `S`, `R`).
-    - Perilla maestra ADSR (Izquierda) para el parámetro seleccionado del fader activo.
-    - Fader vertical `CUTOFF` (Derecha) para corte de frecuencia del fader activo.
-    - 4 Botones ADSR (`ATTACK`, `DECAY`, `SUSTAIN`, `RELEASE`) con valor numérico en tiempo real.
-  - **Tarjeta Independiente `TEMPO CONTROL`:** Botones `-` y `+` con 0ms de latencia.
-  - **Fader Horizontal `RESONANCE`:** Control de resonancia del filtro del fader activo.
-  - **Tarjeta `MEMORY BANKS`:** 8 Bancos de Memoria (`BANK 1` a `BANK 8`) con pulsación corta para cargar y pulsación de 1s para guardar toda la configuración.
-  - **Fader Horizontal `MODULATION`:** Control máster de modulación al 100% de ancho.
+### 1. Interfaz y organización del código
+
+`App.tsx` solo conecta los hooks con las pantallas y maneja el botón atrás. Cada pantalla y componente trae sus propios estilos.
+
+- **Pantallas** (`src/screens/`):
+  - `live/LiveScreen.tsx` ("En vivo"): `ArrangerPanel` (acorde detectado, sección actual y en cola, volumen del ritmo, MAIN A-D, INTRO/FILL/ENDING, SYNC/ACMP/START), `MixerPanel` (4 faders, octava del fader seleccionado, transposición global) y `BankBar` (bancos 1-8 y botón EDITAR).
+  - `EditVoiceScreen.tsx` ("Editar voz"): pestañas F1-F4, gráfica ADSR, A/D/S/R, cutoff, resonancia, vibrato (modulación global) y octava por fader.
+  - `library/StyleLibraryScreen.tsx` y `library/VoiceLibraryScreen.tsx`: búsqueda, categorías, importar, renombrar y borrar. Piezas compartidas en `library/` (`SearchBox`, `CategoryBar`, `LibraryCard`, `libraryStyles`).
+- **Componentes** (`src/components/`): `TopBar` (indicador MIDI único, ritmo, BPM, beat, SUSTAIN, tema), `controls/` (`HorizontalFader`, `ChannelFader` con medidor VU), `modals/` (aviso, renombrar, Bluetooth MIDI), `AdsrGraph`, `Stepper`, `ScreenHeader`, `Icons`, `AppText`.
+- **Hooks** (`src/hooks/`): `useFaders` (estado de los faders y envío al motor), `useMemoryBanks`, `useVoiceLibrary`, `useArranger`, `useMidiDevices`, `useBluetoothModal`, `useConsoleAlert`, `useDeviceStatus`, `useSynthEngine`.
+- **Reglas de la interfaz**:
+  - INTRO y ENDING usan la variación en uso (MAIN B -> INTRO B); si el ritmo no la trae, la A (`availableSections`).
+  - Bancos: toque = cargar, mantener 1 s = guardar, mantener 3 s = borrar.
+  - Tocar el nombre de la voz en un fader abre la librería para ese fader.
+
+### Fuente propia
+- Titillium Web (OFL, licencia en `assets/fonts/OFL.txt`). Registrada en Android como familia `AppFont`: `android/app/src/main/res/font/app_font.xml` + `ReactFontManager.addCustomFont` en `MainApplication.kt`.
+- `app_font.xml` asigna cada `fontWeight` a un archivo: 400-500 Regular, 600-900 SemiBold (a propósito, para que nada se vea grueso).
+- Usar siempre `Text` / `TextInput` de `src/components/AppText.tsx`, nunca los de `react-native`.
+- **Cuidado**: `npx expo prebuild --clean` regenera `android/` y borra el registro de la fuente; hay que restaurar esos dos archivos.
+
+### Tema claro / oscuro
+- Los estilos se escriben con la paleta oscura usando `createThemedStyles` y se leen con `useThemedStyles` (`src/theme/ThemeContext.tsx`).
+- El tema claro se deriva automáticamente (`src/theme/colorTransform.ts`): neutros oscuros -> claros, textos -> oscuros, acentos oscurecidos hasta contrastar con el fondo claro.
+- Colores en JSX (iconos, SVG, LEDs): pasarlos por `c()` de `useTheme()`. Texto blanco sobre un botón de color: `ON_ACCENT` (no se transforma).
+- La preferencia se guarda en `documentDirectory/ui_settings.json`.
+
+### Archivos importados (ritmos y sonidos)
+- `src/services/importStorage.ts`: copia al almacenamiento privado (`documentDirectory/styles/` y `/soundfonts/`), índice JSON con el nombre del archivo (no la ruta completa), escritura segura del índice y borrado de la copia en caché.
+- Se conservan al cerrar o actualizar la app (`adb install -r`); se pierden al desinstalarla.
+- Al leer el índice se migran índices antiguos, se quitan entradas sin archivo y se recuperan archivos no indexados (categoría CUSTOM).
+- Duplicados (mismo nombre original y tamaño) se omiten. Importar con "ALL" seleccionado guarda en CUSTOM. El tempo de los .STY se lee del archivo al importar.
 
 ### 2. Módulos y Motor Nativo C++ Implementados
 - **`expo-battery`**: Módulo nativo para lectura real de la batería del dispositivo.

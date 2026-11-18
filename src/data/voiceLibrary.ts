@@ -19,7 +19,7 @@ export const matchStyleCategory = (styleCat?: string, styleName?: string, select
 export interface VoicePreset {
   id: string;
   name: string;
-  category: 'PIANO' | 'PADS' | 'STRINGS' | 'LEADS' | 'BRASS' | 'ORGAN' | 'BASS';
+  category: 'PIANO' | 'PADS' | 'STRINGS' | 'LEADS' | 'BRASS' | 'ORGAN' | 'BASS' | 'CUSTOM';
   sf2Path: string;
   sf2Preset: number;
   isCustom?: boolean;

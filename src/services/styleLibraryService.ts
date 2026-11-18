@@ -1,25 +1,52 @@
-import * as FileSystem from 'expo-file-system';
 import * as DocumentPicker from 'expo-document-picker';
+import * as FileSystem from 'expo-file-system';
+import { getStyleData } from './styParser';
+import {
+  baseName,
+  copyIntoLibrary,
+  displayNameFromFile,
+  ensureDir,
+  extensionOf,
+  fileExists,
+  fileSize,
+  importDir,
+  readIndex,
+  writeIndex,
+} from './importStorage';
 
-const STYLES_DIR = `${FileSystem.documentDirectory}styles/`;
+const STYLES_DIR = importDir('styles');
 const INDEX_FILE = `${STYLES_DIR}styles_index.json`;
+const VALID_STYLE_EXTENSIONS = ['.sty', '.prs', '.pcs', '.sst', '.mid', '.midi'];
+const FALLBACK_BPM = 120;
 
 export interface StylePreset {
   id: string;
   name: string;
   category: string;
-  filePath?: string; // Ruta local del archivo .sty importado
+  filePath?: string; // Ruta local del archivo importado
   isCustom?: boolean;
   defaultBpm: number;
 }
 
 export interface StyleImportResult {
   importedStyles: StylePreset[];
-  rejectedCount: number;
-  message?: string;
+  rejectedCount: number; // formato no soportado
+  duplicateCount: number; // ya estaban importados
+  failedCount: number; // no se pudieron copiar
 }
 
-const VALID_STYLE_EXTENSIONS = ['.sty', '.prs', '.pcs', '.sst', '.mid', '.midi'];
+/** Entrada del índice en disco: guarda el nombre del archivo, no la ruta */
+interface StoredStyle {
+  id: string;
+  name: string;
+  category: string;
+  fileName: string;
+  defaultBpm: number;
+  originalName?: string;
+  size?: number;
+  /** Índices antiguos guardaban la ruta completa */
+  filePath?: string;
+}
 
 export const BUILTIN_STYLES: StylePreset[] = [
   { id: 'st_1', name: 'Cumbia Professional', category: 'LATIN', defaultBpm: 105 },
@@ -28,6 +55,27 @@ export const BUILTIN_STYLES: StylePreset[] = [
   { id: 'st_4', name: 'Salsa Classic', category: 'LATIN', defaultBpm: 180 },
   { id: 'st_5', name: 'Bachata Groove', category: 'LATIN', defaultBpm: 128 },
 ];
+
+const newId = () => `custom_sty_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+
+const toPreset = (s: StoredStyle): StylePreset => ({
+  id: s.id,
+  name: s.name,
+  category: s.category,
+  filePath: `${STYLES_DIR}${s.fileName}`,
+  isCustom: true,
+  defaultBpm: s.defaultBpm,
+});
+
+/** Tempo real del archivo (el que trae el .STY), o 120 si no se puede leer */
+async function readStyleBpm(path: string): Promise<number> {
+  try {
+    const data = await getStyleData('import', path);
+    return data.defaultBpm || FALLBACK_BPM;
+  } catch {
+    return FALLBACK_BPM;
+  }
+}
 
 export class StyleLibraryService {
   private static instance: StyleLibraryService;
@@ -39,145 +87,107 @@ export class StyleLibraryService {
     return StyleLibraryService.instance;
   }
 
-  private async ensureDirectoryExists(): Promise<void> {
-    try {
-      const dirInfo = await FileSystem.getInfoAsync(STYLES_DIR);
-      if (!dirInfo.exists) {
-        await FileSystem.makeDirectoryAsync(STYLES_DIR, { intermediates: true });
+  /**
+   * Lee el índice, lo migra al formato por nombre de archivo, quita entradas cuyo archivo
+   * ya no existe y recupera archivos de la carpeta que no estuvieran indexados.
+   */
+  private async loadIndex(): Promise<StoredStyle[]> {
+    await ensureDir(STYLES_DIR);
+    const raw = await readIndex<StoredStyle>(INDEX_FILE);
+    let changed = false;
+
+    const list: StoredStyle[] = [];
+    for (const entry of raw) {
+      const fileName = entry.fileName || (entry.filePath ? baseName(entry.filePath) : '');
+      if (!entry.fileName || entry.filePath) changed = true; // migración
+      if (!fileName || !(await fileExists(`${STYLES_DIR}${fileName}`))) {
+        console.warn(`[StyleLibraryService] Archivo faltante, se quita del índice: ${entry.name}`);
+        changed = true;
+        continue;
       }
-    } catch (e) {
-      console.warn('[StyleLibraryService] Error asegurando directorio de ritmos:', e);
+      const { filePath: _legacy, ...rest } = entry;
+      list.push({ ...rest, fileName });
     }
+
+    // Archivos en la carpeta que no están en el índice (p. ej. índice dañado)
+    const dirFiles = await FileSystem.readDirectoryAsync(STYLES_DIR);
+    for (const fileName of dirFiles) {
+      if (!VALID_STYLE_EXTENSIONS.includes(extensionOf(fileName))) continue;
+      if (list.some((s) => s.fileName === fileName)) continue;
+      const path = `${STYLES_DIR}${fileName}`;
+      list.push({
+        id: newId(),
+        name: displayNameFromFile(fileName),
+        category: 'CUSTOM',
+        fileName,
+        defaultBpm: await readStyleBpm(path),
+        size: await fileSize(path),
+      });
+      changed = true;
+    }
+
+    if (changed) await writeIndex(INDEX_FILE, list);
+    return list;
   }
 
   public async getCustomStyles(): Promise<StylePreset[]> {
-    await this.ensureDirectoryExists();
     try {
-      let indexList: StylePreset[] = [];
-      const fileInfo = await FileSystem.getInfoAsync(INDEX_FILE);
-      if (fileInfo.exists) {
-        const jsonContent = await FileSystem.readAsStringAsync(INDEX_FILE);
-        const parsed = JSON.parse(jsonContent);
-        if (Array.isArray(parsed)) {
-          indexList = parsed;
-        }
-      }
-
-      // Escaneo automático de seguridad del directorio físico para recuperar cualquier archivo no indexado
-      const dirFiles = await FileSystem.readDirectoryAsync(STYLES_DIR);
-      let needsSave = false;
-
-      for (const fileName of dirFiles) {
-        if (fileName === 'styles_index.json') continue;
-        const fileExt = '.' + (fileName.split('.').pop()?.toLowerCase() || '');
-        if (!VALID_STYLE_EXTENSIONS.includes(fileExt)) continue;
-
-        const filePath = `${STYLES_DIR}${fileName}`;
-        const alreadyIndexed = indexList.some((s) => s.filePath && (s.filePath.endsWith(fileName) || s.filePath === filePath));
-
-        if (!alreadyIndexed) {
-          const cleanName = fileName.replace(/^[0-9]+_/, '').replace(/\.[^/.]+$/, '').replace(/_/g, ' ');
-          const recoveredStyle: StylePreset = {
-            id: `custom_sty_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-            name: cleanName,
-            category: 'CUSTOM',
-            filePath: filePath,
-            isCustom: true,
-            defaultBpm: 120,
-          };
-          indexList.push(recoveredStyle);
-          needsSave = true;
-        }
-      }
-
-      if (needsSave || !fileInfo.exists) {
-        await this.saveIndex(indexList);
-      }
-
-      return indexList;
+      return (await this.loadIndex()).map(toPreset);
     } catch (e) {
-      console.warn('[StyleLibraryService] Error leyendo índice de ritmos:', e);
+      console.warn('[StyleLibraryService] Error leyendo ritmos importados:', e);
       return [];
     }
   }
 
-  private async saveIndex(styles: StylePreset[]): Promise<void> {
-    await this.ensureDirectoryExists();
-    try {
-      await FileSystem.writeAsStringAsync(INDEX_FILE, JSON.stringify(styles, null, 2));
-    } catch (e) {
-      console.warn('[StyleLibraryService] Error guardando índice de ritmos:', e);
-    }
-  }
+  public async pickAndImportStyleFiles(targetCategory: string = 'CUSTOM'): Promise<StyleImportResult> {
+    const empty: StyleImportResult = { importedStyles: [], rejectedCount: 0, duplicateCount: 0, failedCount: 0 };
+    const result = await DocumentPicker.getDocumentAsync({ type: ['*/*'], copyToCacheDirectory: true, multiple: true });
+    if (result.canceled || !result.assets?.length) return empty;
 
-  public async pickAndImportStyleFiles(targetCategory: string = 'LATIN'): Promise<StyleImportResult> {
-    await this.ensureDirectoryExists();
-    try {
-      const result = await DocumentPicker.getDocumentAsync({
-        type: ['*/*'],
-        copyToCacheDirectory: true,
-        multiple: true,
-      });
+    const list = await this.loadIndex();
+    const category = targetCategory === 'ALL' ? 'CUSTOM' : targetCategory;
+    const out = { ...empty, importedStyles: [] as StylePreset[] };
 
-      if (result.canceled || !result.assets || result.assets.length === 0) {
-        return { importedStyles: [], rejectedCount: 0 };
+    for (const file of result.assets) {
+      if (!VALID_STYLE_EXTENSIONS.includes(extensionOf(file.name))) {
+        out.rejectedCount++;
+        continue;
       }
-
-      const currentCustomStyles = await this.getCustomStyles();
-      const newlyImportedStyles: StylePreset[] = [];
-      let rejectedCount = 0;
-
-      const assignedCategory = targetCategory === 'ALL' ? 'LATIN' : targetCategory;
-
-      for (const file of result.assets) {
-        const fileExt = '.' + (file.name.split('.').pop()?.toLowerCase() || '');
-        if (!VALID_STYLE_EXTENSIONS.includes(fileExt)) {
-          rejectedCount++;
-          continue;
-        }
-
-        const cleanName = file.name.replace(/\.[^/.]+$/, '');
-        const targetFilename = `${Date.now()}_${file.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
-        const destinationPath = `${STYLES_DIR}${targetFilename}`;
-
-        // Copiar archivo al almacenamiento local persistente permanente
-        await FileSystem.copyAsync({
-          from: file.uri,
-          to: destinationPath,
-        });
-
-        const newStyle: StylePreset = {
-          id: `custom_sty_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-          name: cleanName,
-          category: assignedCategory,
-          filePath: destinationPath,
-          isCustom: true,
-          defaultBpm: 120,
+      const size = file.size ?? (await fileSize(file.uri));
+      if (list.some((s) => s.originalName === file.name && s.size === size)) {
+        out.duplicateCount++;
+        continue;
+      }
+      try {
+        const fileName = await copyIntoLibrary(file.uri, file.name, STYLES_DIR);
+        const entry: StoredStyle = {
+          id: newId(),
+          name: file.name.replace(/\.[^/.]+$/, ''),
+          category,
+          fileName,
+          defaultBpm: await readStyleBpm(`${STYLES_DIR}${fileName}`),
+          originalName: file.name,
+          size,
         };
-
-        newlyImportedStyles.push(newStyle);
+        list.push(entry);
+        out.importedStyles.push(toPreset(entry));
+      } catch (e) {
+        console.warn(`[StyleLibraryService] No se pudo copiar ${file.name}:`, e);
+        out.failedCount++;
       }
-
-      if (newlyImportedStyles.length > 0) {
-        const updatedList = [...currentCustomStyles, ...newlyImportedStyles];
-        await this.saveIndex(updatedList);
-      }
-
-      return {
-        importedStyles: newlyImportedStyles,
-        rejectedCount,
-      };
-    } catch (e) {
-      console.warn('[StyleLibraryService] Error al importar archivos .STY:', e);
-      return { importedStyles: [], rejectedCount: 0, message: 'Error de lectura de archivo' };
     }
+
+    if (out.importedStyles.length > 0) await writeIndex(INDEX_FILE, list);
+    return out;
   }
 
   public async renameCustomStyle(styleId: string, newName: string): Promise<boolean> {
     try {
-      const current = await this.getCustomStyles();
-      const updatedList = current.map((s) => (s.id === styleId ? { ...s, name: newName.trim() } : s));
-      await this.saveIndex(updatedList);
+      const list = await this.loadIndex();
+      await writeIndex(
+        INDEX_FILE,
+        list.map((s) => (s.id === styleId ? { ...s, name: newName.trim() } : s))
+      );
       return true;
     } catch (e) {
       console.warn('[StyleLibraryService] Error al renombrar ritmo:', e);
@@ -187,17 +197,10 @@ export class StyleLibraryService {
 
   public async deleteCustomStyle(styleId: string): Promise<boolean> {
     try {
-      const current = await this.getCustomStyles();
-      const target = current.find((s) => s.id === styleId);
-      if (target && target.filePath) {
-        const fileInfo = await FileSystem.getInfoAsync(target.filePath);
-        if (fileInfo.exists) {
-          await FileSystem.deleteAsync(target.filePath, { idempotent: true });
-        }
-      }
-
-      const updatedList = current.filter((s) => s.id !== styleId);
-      await this.saveIndex(updatedList);
+      const list = await this.loadIndex();
+      const target = list.find((s) => s.id === styleId);
+      if (target) await FileSystem.deleteAsync(`${STYLES_DIR}${target.fileName}`, { idempotent: true });
+      await writeIndex(INDEX_FILE, list.filter((s) => s.id !== styleId));
       return true;
     } catch (e) {
       console.warn('[StyleLibraryService] Error al eliminar ritmo:', e);

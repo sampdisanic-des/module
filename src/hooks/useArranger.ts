@@ -308,7 +308,7 @@ export const useArranger = (): UseArrangerReturn => {
     setLoadedStyle(preset);
   }, []);
 
-  const importStyleFiles = useCallback(async (targetCategory: string = 'LATIN'): Promise<StyleImportResult> => {
+  const importStyleFiles = useCallback(async (targetCategory: string = 'CUSTOM'): Promise<StyleImportResult> => {
     const result = await StyleLibraryService.pickAndImportStyleFiles(targetCategory);
     if (result.importedStyles.length > 0) {
       const customStyles = await StyleLibraryService.getCustomStyles();
@@ -322,7 +322,16 @@ export const useArranger = (): UseArrangerReturn => {
     await StyleLibraryService.deleteCustomStyle(styleId);
     const customStyles = await StyleLibraryService.getCustomStyles();
     setAvailableStyles([...BUILTIN_STYLES, ...customStyles]);
-    setLoadedStyle(BUILTIN_STYLES[0]);
+    // Solo cambiar de ritmo si se borró el que estaba cargado
+    if (loadedStyleRef.current.id === styleId) {
+      if (isPlayingRef.current) {
+        stopNativeStylePlayback();
+        setIsPlaying(false);
+        isPlayingRef.current = false;
+      }
+      loadedStyleRef.current = BUILTIN_STYLES[0];
+      setLoadedStyle(BUILTIN_STYLES[0]);
+    }
   }, []);
 
   const renameStyleFile = useCallback(async (styleId: string, newName: string) => {

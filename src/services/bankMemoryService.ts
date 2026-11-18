@@ -94,6 +94,23 @@ export class BankMemoryService {
     return newPreset;
   }
 
+  /** Tras renombrar una voz importada, actualizar los bancos que la usan (guardan el nombre) */
+  public async renameVoiceReferences(oldName: string, newName: string): Promise<MemoryBanksCatalog> {
+    const catalog = await this.getAllBanks();
+    let changed = false;
+    for (const preset of Object.values(catalog)) {
+      if (!preset) continue;
+      for (const key of ['f1', 'f2', 'f3', 'f4'] as const) {
+        if (preset[key]?.voiceId === oldName) {
+          preset[key].voiceId = newName;
+          changed = true;
+        }
+      }
+    }
+    if (changed) await this.saveAllBanks(catalog);
+    return catalog;
+  }
+
   public async clearBank(bankId: number): Promise<void> {
     const catalog = await this.getAllBanks();
     delete catalog[bankId];

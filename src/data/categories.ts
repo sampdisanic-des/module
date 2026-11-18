@@ -1,0 +1,2 @@
+export const STYLE_CATEGORIES = ['ALL', 'LATIN', 'POP', 'ROCK', 'BALLAD', 'CUMBIA', 'DANCE', 'CUSTOM'];
+export const VOICE_CATEGORIES = ['ALL', 'PIANO', 'PADS', 'STRINGS', 'LEADS', 'BRASS', 'ORGAN', 'BASS', 'CUSTOM'];

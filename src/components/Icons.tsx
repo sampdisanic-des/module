@@ -1,5 +1,6 @@
 import React from 'react';
 import Svg, { Path, Circle, Line } from 'react-native-svg';
+import { useTheme } from '../theme/ThemeContext';
 
 // ================= ICONOS VECTORIALES SVG =================
 export const SearchIcon = ({ size = 13, color = '#7187A1' }: { size?: number; color?: string }) => (
@@ -37,12 +38,13 @@ export const UsbCableIcon = ({ size = 13, color = '#7187A1' }: { size?: number; 
 export const SignalBarsIcon = ({ rssi = -60, size = 12 }: { rssi?: number; size?: number }) => {
   // rssi: > -60 (4 bars), > -75 (3 bars), > -90 (2 bars), <= -90 (1 bar)
   const bars = rssi > -60 ? 4 : rssi > -75 ? 3 : rssi > -90 ? 2 : 1;
+  const { c } = useTheme();
   return (
     <Svg width={size} height={size} viewBox="0 0 16 16" fill="none">
-      <Line x1="2" y1="13" x2="2" y2="10" stroke={bars >= 1 ? '#00E5FF' : '#23384D'} strokeWidth="2" strokeLinecap="round" />
-      <Line x1="6" y1="13" x2="6" y2="7.5" stroke={bars >= 2 ? '#00E5FF' : '#23384D'} strokeWidth="2" strokeLinecap="round" />
-      <Line x1="10" y1="13" x2="10" y2="5" stroke={bars >= 3 ? '#00E5FF' : '#23384D'} strokeWidth="2" strokeLinecap="round" />
-      <Line x1="14" y1="13" x2="14" y2="2" stroke={bars >= 4 ? '#00E5FF' : '#23384D'} strokeWidth="2" strokeLinecap="round" />
+      <Line x1="2" y1="13" x2="2" y2="10" stroke={c(bars >= 1 ? '#00E5FF' : '#23384D')} strokeWidth="2" strokeLinecap="round" />
+      <Line x1="6" y1="13" x2="6" y2="7.5" stroke={c(bars >= 2 ? '#00E5FF' : '#23384D')} strokeWidth="2" strokeLinecap="round" />
+      <Line x1="10" y1="13" x2="10" y2="5" stroke={c(bars >= 3 ? '#00E5FF' : '#23384D')} strokeWidth="2" strokeLinecap="round" />
+      <Line x1="14" y1="13" x2="14" y2="2" stroke={c(bars >= 4 ? '#00E5FF' : '#23384D')} strokeWidth="2" strokeLinecap="round" />
     </Svg>
   );
 };
@@ -96,3 +98,21 @@ export const AssignIcon = ({ size = 14, color = '#00E5FF' }: { size?: number; co
   </Svg>
 );
 
+
+export const SunIcon = ({ size = 14, color = '#FFC400' }: { size?: number; color?: string }) => (
+  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+    <Circle cx="12" cy="12" r="4.5" stroke={color} strokeWidth="2.2" />
+    <Path
+      d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8M4.9 19.1l1.8-1.8M17.3 6.7l1.8-1.8"
+      stroke={color}
+      strokeWidth="2.2"
+      strokeLinecap="round"
+    />
+  </Svg>
+);
+
+export const MoonIcon = ({ size = 14, color = '#B388FF' }: { size?: number; color?: string }) => (
+  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+    <Path d="M20.5 14.5A8.5 8.5 0 1 1 9.5 3.5a7 7 0 0 0 11 11z" stroke={color} strokeWidth="2.2" strokeLinejoin="round" />
+  </Svg>
+);
